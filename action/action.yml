@@ -1,0 +1,54 @@
+name: 'DAVR AI Verification Action'
+description: 'Deterministic Agent Verification Runtime for CI: Pre-flight health, impact-driven testing, and flakiness verification.'
+author: 'DAVR Contributors'
+
+inputs:
+  command:
+    description: 'DAVR command to run (doctor, test, impact, flaky)'
+    required: false
+    default: 'test'
+  framework:
+    description: 'Override test framework (cargo_test, pytest, jest, go_test)'
+    required: false
+    default: ''
+  fail-on-flaky:
+    description: 'Whether to fail the CI build if flaky tests are detected'
+    required: false
+    default: 'false'
+  working-directory:
+    description: 'Target repository directory'
+    required: false
+    default: '.'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up DAVR
+      shell: bash
+      run: |
+        if ! command -v davr &> /dev/null; then
+          echo "Installing DAVR binary..."
+          cargo install --path "${{ github.action_path }}/../crates/davr-cli" --root "$HOME/.local"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+        fi
+
+    - name: Run DAVR Verification
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        echo "==> Running DAVR ${{ inputs.command }}..."
+        if [ "${{ inputs.command }}" = "doctor" ]; then
+          davr doctor
+        elif [ "${{ inputs.command }}" = "test" ]; then
+          if [ -n "${{ inputs.framework }}" ]; then
+            davr test --framework "${{ inputs.framework }}"
+          else
+            davr test
+          fi
+        elif [ "${{ inputs.command }}" = "flaky" ]; then
+          davr flaky --iterations 5
+        elif [ "${{ inputs.command }}" = "impact" ]; then
+          davr impact
+        else
+          davr ${{ inputs.command }}
+        fi

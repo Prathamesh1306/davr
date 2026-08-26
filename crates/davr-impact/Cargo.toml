@@ -1,0 +1,20 @@
+[package]
+name = "davr-impact"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+davr-types = { path = "../davr-types" }
+davr-storage = { path = "../davr-storage" }
+davr-ast = { path = "../davr-ast" }
+davr-config = { path = "../davr-config" }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.10"

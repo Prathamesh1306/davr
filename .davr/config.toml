@@ -1,0 +1,85 @@
+[project]
+name = "davr"
+languages = ["rust"]
+
+[environment]
+required_env_vars = ["ANTHROPIC_API_KEY"]
+required_credentials = []
+docker_required = false
+warnings_block_run = false
+
+[[environment.required_tools]]
+name = "node"
+min_version = "18.0.0"
+
+[[environment.required_tools]]
+name = "python"
+min_version = "3.10.0"
+
+[[environment.required_tools]]
+name = "git"
+min_version = "2.30.0"
+
+[agent]
+default_agent = "claude"
+allowed_agents = [
+    "claude",
+    "aider",
+    "opencode",
+]
+timeout_seconds = 0
+sanitize_env = true
+env_allowlist = [
+    "PATH",
+    "HOME",
+    "LANG",
+    "ANTHROPIC_API_KEY",
+]
+
+[security]
+blocked_commands = [
+    'regex:^rm\s+-rf\s+/(\s|$)',
+    "glob:git push --force*",
+]
+confirm_commands = [
+    "glob:git push*",
+    "glob:*DROP TABLE*",
+]
+redact_patterns = [
+    "regex:sk-[A-Za-z0-9]{20,}",
+    "regex:ghp_[A-Za-z0-9]{36}",
+]
+
+[git]
+snapshot_on_run = true
+max_snapshots_per_project = 20
+snapshot_retention_days = 14
+
+[telemetry]
+enabled = true
+retention_days = 30
+verification_retention_days = 90
+
+[test]
+frameworks = [
+    "pytest",
+    "jest",
+    "cargo_test",
+    "go_test",
+]
+impact_min_confidence = "medium"
+fallback_to_full_suite = true
+parallelism = 0
+
+[flaky]
+iterations = 10
+timeout_seconds = 30
+max_parallel_iterations = 4
+
+[mcp]
+enabled = false
+allow_mutating_tools = false
+
+[ci]
+fail_on_flaky = false
+post_pr_comment = true
