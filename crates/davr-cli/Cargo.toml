@@ -1,0 +1,30 @@
+[package]
+name = "davr-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "davr"
+path = "src/main.rs"
+
+[dependencies]
+davr-types = { path = "../davr-types" }
+davr-config = { path = "../davr-config" }
+davr-core = { path = "../davr-core" }
+davr-env = { path = "../davr-env" }
+davr-security = { path = "../davr-security" }
+davr-storage = { path = "../davr-storage" }
+davr-git = { path = "../davr-git" }
+davr-flaky = { path = "../davr-flaky" }
+davr-mcp = { path = "../davr-mcp" }
+tokio = { workspace = true }
+clap = { workspace = true }
+colored = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

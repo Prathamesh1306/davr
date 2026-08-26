@@ -1,0 +1,17 @@
+[package]
+name = "davr-fs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+davr-types = { path = "../davr-types" }
+notify = { workspace = true }
+blake3 = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.10"

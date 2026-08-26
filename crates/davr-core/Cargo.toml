@@ -1,0 +1,33 @@
+[package]
+name = "davr-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+davr-types = { path = "../davr-types" }
+davr-storage = { path = "../davr-storage" }
+davr-config = { path = "../davr-config" }
+davr-telemetry = { path = "../davr-telemetry" }
+davr-security = { path = "../davr-security" }
+davr-env = { path = "../davr-env" }
+davr-git = { path = "../davr-git" }
+davr-fs = { path = "../davr-fs" }
+davr-agent = { path = "../davr-agent" }
+davr-ast = { path = "../davr-ast" }
+davr-impact = { path = "../davr-impact" }
+davr-test = { path = "../davr-test" }
+davr-flaky = { path = "../davr-flaky" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+blake3 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.10"

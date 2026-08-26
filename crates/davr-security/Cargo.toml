@@ -1,0 +1,17 @@
+[package]
+name = "davr-security"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+davr-types = { path = "../davr-types" }
+davr-config = { path = "../davr-config" }
+regex = { workspace = true }
+glob = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.10"

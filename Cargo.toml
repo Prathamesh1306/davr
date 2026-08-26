@@ -1,0 +1,66 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/davr-types",
+    "crates/davr-storage",
+    "crates/davr-config",
+    "crates/davr-telemetry",
+    "crates/davr-security",
+    "crates/davr-env",
+    "crates/davr-git",
+    "crates/davr-fs",
+    "crates/davr-agent",
+    "crates/davr-ast",
+    "crates/davr-impact",
+    "crates/davr-test",
+    "crates/davr-flaky",
+    "crates/davr-mcp",
+    "crates/davr-core",
+    "crates/davr-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["DAVR Contributors"]
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/davr-dev/davr"
+
+[workspace.dependencies]
+# Serialization & Interchange
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# SQLite & Storage
+rusqlite = { version = "0.31", features = ["bundled", "uuid", "chrono"] }
+
+# CLI & UX
+clap = { version = "4.5", features = ["derive", "env"] }
+colored = "2.1"
+indicatif = "0.17"
+
+# Async & Process Supervision
+tokio = { version = "1.38", features = ["full"] }
+
+# Utilities
+uuid = { version = "1.8", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1.0"
+anyhow = "1.0"
+regex = "1.10"
+glob = "0.3"
+blake3 = "1.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+which = "6.0"
+git2 = { version = "0.19", default-features = false }
+notify = "6.1"
+nix = { version = "0.29", features = ["process", "signal"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

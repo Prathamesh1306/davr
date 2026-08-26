@@ -1,0 +1,20 @@
+[package]
+name = "davr-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+davr-types = { path = "../davr-types" }
+davr-config = { path = "../davr-config" }
+davr-security = { path = "../davr-security" }
+davr-telemetry = { path = "../davr-telemetry" }
+tokio = { workspace = true }
+nix = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.10"
