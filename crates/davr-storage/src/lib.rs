@@ -7,10 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use tracing::info;
 
-pub const MIGRATIONS: &[(&str, &str)] = &[(
-    "001_init",
-    include_str!("../migrations/001_init.sql"),
-)];
+pub const MIGRATIONS: &[(&str, &str)] = &[("001_init", include_str!("../migrations/001_init.sql"))];
 
 pub struct Database {
     conn: Connection,
@@ -75,8 +72,9 @@ impl Database {
                     .transaction()
                     .map_err(|e| DavrError::Database(e.to_string()))?;
 
-                tx.execute_batch(sql)
-                    .map_err(|e| DavrError::Database(format!("Migration {} failed: {}", desc, e)))?;
+                tx.execute_batch(sql).map_err(|e| {
+                    DavrError::Database(format!("Migration {} failed: {}", desc, e))
+                })?;
 
                 let now = Utc::now().timestamp_millis();
                 tx.execute(
@@ -88,7 +86,11 @@ impl Database {
                 tx.commit()
                     .map_err(|e| DavrError::Database(e.to_string()))?;
 
-                info!(version = version, description = desc, "Applied SQLite migration");
+                info!(
+                    version = version,
+                    description = desc,
+                    "Applied SQLite migration"
+                );
             }
         }
         Ok(())
@@ -104,7 +106,12 @@ impl Database {
     }
 
     /// Ensures a project record exists for the given root path.
-    pub fn ensure_project(&self, name: &str, root_path: &str, default_lang: Option<&str>) -> Result<ProjectId> {
+    pub fn ensure_project(
+        &self,
+        name: &str,
+        root_path: &str,
+        default_lang: Option<&str>,
+    ) -> Result<ProjectId> {
         let existing: Option<String> = self
             .conn
             .query_row(
@@ -246,7 +253,12 @@ impl Database {
     }
 
     /// Completes an agent session.
-    pub fn finish_session(&self, session_id: &SessionId, status: SessionStatus, exit_code: Option<i32>) -> Result<()> {
+    pub fn finish_session(
+        &self,
+        session_id: &SessionId,
+        status: SessionStatus,
+        exit_code: Option<i32>,
+    ) -> Result<()> {
         let now = Utc::now().timestamp_millis();
         self.conn
             .execute(

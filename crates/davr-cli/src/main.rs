@@ -93,7 +93,11 @@ struct FlakyArgs {
     #[arg(short, long, help = "Filter pattern for test names")]
     filter: Option<String>,
 
-    #[arg(short, long, help = "Number of repeat iterations (default from config: 5-10)")]
+    #[arg(
+        short,
+        long,
+        help = "Number of repeat iterations (default from config: 5-10)"
+    )]
     iterations: Option<usize>,
 }
 
@@ -102,7 +106,12 @@ struct ImpactArgs {
     #[arg(long, help = "Base snapshot tree hash to diff against")]
     snapshot: Option<String>,
 
-    #[arg(short, long, default_value_t = 3, help = "Maximum transitive depth to traverse")]
+    #[arg(
+        short,
+        long,
+        default_value_t = 3,
+        help = "Maximum transitive depth to traverse"
+    )]
     depth: usize,
 }
 
@@ -132,13 +141,20 @@ struct DoctorArgs {
 
 #[derive(Args, Debug)]
 struct RunArgs {
-    #[arg(long, help = "Override agent identifier (claude, aider, opencode, generic)")]
+    #[arg(
+        long,
+        help = "Override agent identifier (claude, aider, opencode, generic)"
+    )]
     agent: Option<String>,
 
     #[arg(long, help = "Skip pre-run Git snapshot")]
     no_snapshot: bool,
 
-    #[arg(last = true, required = true, help = "Agent command and arguments to execute")]
+    #[arg(
+        last = true,
+        required = true,
+        help = "Agent command and arguments to execute"
+    )]
     agent_command: Vec<String>,
 }
 
@@ -280,7 +296,10 @@ async fn execute_command(
                     engine.project_root().display().to_string().bold()
                 );
                 println!("  Config: {}", config_path.display());
-                println!("  Database: {}", engine.project_root().join(".davr/davr.db").display());
+                println!(
+                    "  Database: {}",
+                    engine.project_root().join(".davr/davr.db").display()
+                );
             }
             Ok(0)
         }
@@ -326,9 +345,10 @@ async fn execute_command(
         }
 
         Commands::Run(args) => {
-            let cmd = args.agent_command.first().ok_or_else(|| {
-                DavrError::Config("Missing agent command to execute".into())
-            })?;
+            let cmd = args
+                .agent_command
+                .first()
+                .ok_or_else(|| DavrError::Config("Missing agent command to execute".into()))?;
             let rest_args = &args.agent_command[1..];
 
             if !quiet && !json {
@@ -340,12 +360,7 @@ async fn execute_command(
             }
 
             let summary = engine
-                .run_agent_session(
-                    args.agent.as_deref(),
-                    cmd,
-                    rest_args,
-                    args.no_snapshot,
-                )
+                .run_agent_session(args.agent.as_deref(), cmd, rest_args, args.no_snapshot)
                 .await?;
 
             if json {
@@ -490,7 +505,10 @@ async fn execute_command(
                     println!("    ✔ {}", f.green());
                 }
                 if !report.deleted_files.is_empty() {
-                    println!("  Deleted Files (Agent Created): {}", report.deleted_files.len());
+                    println!(
+                        "  Deleted Files (Agent Created): {}",
+                        report.deleted_files.len()
+                    );
                     for f in &report.deleted_files {
                         println!("    ✘ {}", f.red());
                     }
@@ -504,17 +522,28 @@ async fn execute_command(
                     println!("  (Use {} to overwrite conflicted files)", "--force".bold());
                 }
                 if !report.excluded_files.is_empty() {
-                    println!("  Excluded (Not in Session): {}", report.excluded_files.len());
+                    println!(
+                        "  Excluded (Not in Session): {}",
+                        report.excluded_files.len()
+                    );
                     for f in &report.excluded_files {
                         println!("    - {} (unrelated developer edit)", f.dimmed());
                     }
                 }
                 if args.dry_run {
-                    println!("\n{}", "Dry-run complete. No files were modified.".cyan().bold());
+                    println!(
+                        "\n{}",
+                        "Dry-run complete. No files were modified.".cyan().bold()
+                    );
                 } else if report.status == "succeeded" {
                     println!("\n{}", "✔ Rollback completed successfully.".green().bold());
                 } else {
-                    println!("\n{}", "⚠ Rollback finished with warnings/conflicts.".yellow().bold());
+                    println!(
+                        "\n{}",
+                        "⚠ Rollback finished with warnings/conflicts."
+                            .yellow()
+                            .bold()
+                    );
                 }
             }
             Ok(0)
@@ -525,7 +554,12 @@ async fn execute_command(
             if json {
                 println!("{}", serde_json::to_string_pretty(&diffs).unwrap());
             } else {
-                println!("\n{}", format!("Diff vs Snapshot {}", args.snapshot).bold().underline());
+                println!(
+                    "\n{}",
+                    format!("Diff vs Snapshot {}", args.snapshot)
+                        .bold()
+                        .underline()
+                );
                 for d in diffs {
                     println!("  [{:<8}] {}", d.change_type, d.file_path);
                 }
@@ -597,10 +631,22 @@ async fn execute_command(
             } else if !quiet {
                 println!("\n{}", "DAVR AST Codebase Analysis".bold().underline());
                 println!("  Target Project:     {}", engine.project_root().display());
-                println!("  Source Files:       {}", summary.files_indexed.to_string().bold());
-                println!("  Symbols Extracted:  {}", summary.symbols_extracted.to_string().cyan().bold());
-                println!("  Dependency Edges:   {}", summary.dependency_edges.to_string().green().bold());
-                println!("\n{}", "✔ AST index and dependency graph updated.".green().bold());
+                println!(
+                    "  Source Files:       {}",
+                    summary.files_indexed.to_string().bold()
+                );
+                println!(
+                    "  Symbols Extracted:  {}",
+                    summary.symbols_extracted.to_string().cyan().bold()
+                );
+                println!(
+                    "  Dependency Edges:   {}",
+                    summary.dependency_edges.to_string().green().bold()
+                );
+                println!(
+                    "\n{}",
+                    "✔ AST index and dependency graph updated.".green().bold()
+                );
             }
             Ok(0)
         }
@@ -610,13 +656,22 @@ async fn execute_command(
             if json {
                 println!("{}", serde_json::to_string_pretty(&report).unwrap());
             } else if !quiet {
-                println!("\n{}", "DAVR Transitive Change Impact Analysis".bold().underline());
-                println!("  Directly Changed Files:  {}", report.directly_modified_files.len());
+                println!(
+                    "\n{}",
+                    "DAVR Transitive Change Impact Analysis".bold().underline()
+                );
+                println!(
+                    "  Directly Changed Files:  {}",
+                    report.directly_modified_files.len()
+                );
                 for f in &report.directly_modified_files {
                     println!("    • {}", f.cyan());
                 }
 
-                println!("\n  Impacted Source Files (Transitive Closure): {}", report.impacted_source_files.len());
+                println!(
+                    "\n  Impacted Source Files (Transitive Closure): {}",
+                    report.impacted_source_files.len()
+                );
                 for f in &report.impacted_source_files {
                     println!(
                         "    + {:<35} (depth: {}, confidence: {:?}, reason: {})",
@@ -627,7 +682,10 @@ async fn execute_command(
                     );
                 }
 
-                println!("\n  Impacted Tests Selected: {}", report.impacted_tests.len());
+                println!(
+                    "\n  Impacted Tests Selected: {}",
+                    report.impacted_tests.len()
+                );
                 for t in &report.impacted_tests {
                     println!("    🎯 {}", t.test_file.green().bold());
                 }
@@ -638,7 +696,11 @@ async fn execute_command(
 
         Commands::Flaky(args) => {
             let report = engine
-                .run_flaky_tests(args.framework.as_deref(), args.filter.as_deref(), args.iterations)
+                .run_flaky_tests(
+                    args.framework.as_deref(),
+                    args.filter.as_deref(),
+                    args.iterations,
+                )
                 .await?;
 
             if json {
@@ -646,10 +708,22 @@ async fn execute_command(
             } else if !quiet {
                 println!("\n{}", "DAVR Flakiness Test Analysis".bold().underline());
                 println!("  Total Unique Tests:  {}", report.total_tests);
-                println!("  Stable Pass:         {}", report.stable_pass.to_string().green().bold());
-                println!("  Stable Fail:         {}", report.stable_fail.to_string().red().bold());
-                println!("  Flaky Detected:      {}", report.flaky_detected.to_string().yellow().bold());
-                println!("  Timeout Unstable:    {}", report.timeout_unstable.to_string().purple().bold());
+                println!(
+                    "  Stable Pass:         {}",
+                    report.stable_pass.to_string().green().bold()
+                );
+                println!(
+                    "  Stable Fail:         {}",
+                    report.stable_fail.to_string().red().bold()
+                );
+                println!(
+                    "  Flaky Detected:      {}",
+                    report.flaky_detected.to_string().yellow().bold()
+                );
+                println!(
+                    "  Timeout Unstable:    {}",
+                    report.timeout_unstable.to_string().purple().bold()
+                );
 
                 println!("\n{}", "Individual Test Stability Classification:".bold());
                 for c in &report.reports {
@@ -657,7 +731,9 @@ async fn execute_command(
                         davr_core::FlakyClassification::StablePass => "[STABLE_PASS]".green(),
                         davr_core::FlakyClassification::StableFail => "[STABLE_FAIL]".red(),
                         davr_core::FlakyClassification::Flaky => "[FLAKY]".yellow().bold(),
-                        davr_core::FlakyClassification::TimeoutUnstable => "[TIMEOUT_UNSTABLE]".purple().bold(),
+                        davr_core::FlakyClassification::TimeoutUnstable => {
+                            "[TIMEOUT_UNSTABLE]".purple().bold()
+                        }
                         _ => "[UNKNOWN]".dimmed(),
                     };
                     println!(

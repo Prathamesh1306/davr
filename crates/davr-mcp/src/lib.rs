@@ -240,7 +240,10 @@ impl McpServer {
 
             "davr_rollback" => {
                 let snapshot = args.get("snapshot").and_then(|v| v.as_str());
-                let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+                let dry_run = args
+                    .get("dry_run")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
                 let report = self.engine.rollback(
                     snapshot,

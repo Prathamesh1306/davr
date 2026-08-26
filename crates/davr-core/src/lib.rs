@@ -7,8 +7,8 @@ use davr_git::{FileDiffSummary, GitManager, RollbackReport, RollbackScope};
 use davr_storage::Database;
 use davr_telemetry::TelemetryEmitter;
 use davr_types::{
-    CheckCategory, CheckStatus, DavrError, ProjectId, Result, SessionId,
-    SessionStatus, Severity, SnapshotReason,
+    CheckCategory, CheckStatus, DavrError, ProjectId, Result, SessionId, SessionStatus, Severity,
+    SnapshotReason,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
-pub use davr_test::{TestCaseResult, TestCaseStatus, TestSuiteResult};
 pub use davr_flaky::{FlakyCaseReport, FlakyClassification, FlakySuiteReport};
+pub use davr_test::{TestCaseResult, TestCaseStatus, TestSuiteResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSummary {
@@ -89,7 +89,8 @@ impl CoreEngine {
             .map_err(|e| DavrError::General(format!("Failed to create .davr dir: {}", e)))?;
 
         let env_validator = EnvironmentValidator::new();
-        let detected_langs = languages.unwrap_or_else(|| env_validator.detect_languages(&self.project_root));
+        let detected_langs =
+            languages.unwrap_or_else(|| env_validator.detect_languages(&self.project_root));
 
         let mut config = Config::default();
         let project_name = self
@@ -329,7 +330,9 @@ impl CoreEngine {
                 if let Ok(diffs) = git_mgr.diff_snapshot(&snap.tree_hash) {
                     let now = Utc::now().timestamp_millis();
                     for d in diffs {
-                        if !d.file_path.starts_with(".davr") && touched_set.insert(d.file_path.clone()) {
+                        if !d.file_path.starts_with(".davr")
+                            && touched_set.insert(d.file_path.clone())
+                        {
                             let _ = conn.execute(
                                 "INSERT INTO filesystem_events (session_id, file_path, event_type, confidence, content_hash_after, detected_at)
                                  VALUES (?1, ?2, ?3, 'high', NULL, ?4)",
@@ -380,7 +383,11 @@ impl CoreEngine {
         // 9. Emit SESSION_FINISHED & flush
         telemetry.emit(
             "SESSION_FINISHED",
-            if exit_code == 0 { Severity::Info } else { Severity::Warn },
+            if exit_code == 0 {
+                Severity::Info
+            } else {
+                Severity::Warn
+            },
             Some("agent_sessions"),
             Some(session_id.as_str()),
             Some(serde_json::json!({
@@ -446,7 +453,11 @@ impl CoreEngine {
     }
 
     /// Fetches telemetry trace events
-    pub fn get_trace(&self, session_id: Option<&str>, kind: Option<&str>) -> Result<Vec<TraceItem>> {
+    pub fn get_trace(
+        &self,
+        session_id: Option<&str>,
+        kind: Option<&str>,
+    ) -> Result<Vec<TraceItem>> {
         let db_path = self.project_root.join(".davr").join("davr.db");
         let db = Database::open(&db_path)?;
         let conn = db.inner();
@@ -466,7 +477,9 @@ impl CoreEngine {
             }
         };
 
-        let mut stmt = conn.prepare(query).map_err(|e| DavrError::Database(e.to_string()))?;
+        let mut stmt = conn
+            .prepare(query)
+            .map_err(|e| DavrError::Database(e.to_string()))?;
 
         let mut items = Vec::new();
         let rows = if let (Some(sid), Some(k)) = (session_id, kind) {
@@ -481,7 +494,10 @@ impl CoreEngine {
         .map_err(|e| DavrError::Database(e.to_string()))?;
 
         let mut rows = rows;
-        while let Some(row) = rows.next().map_err(|e| DavrError::Database(e.to_string()))? {
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| DavrError::Database(e.to_string()))?
+        {
             items.push(TraceItem {
                 kind: row.get(0).unwrap_or_default(),
                 severity: row.get(1).unwrap_or_default(),
@@ -624,7 +640,10 @@ impl CoreEngine {
                 report.id.as_str(),
                 &project_id,
                 &snapshot_record_id,
-                resolved_session_id.as_ref().map(|s| SessionId::from_string(s.clone())).as_ref(),
+                resolved_session_id
+                    .as_ref()
+                    .map(|s| SessionId::from_string(s.clone()))
+                    .as_ref(),
                 &report.status,
                 report.restored_files.len() + report.deleted_files.len(),
                 report.error_message.as_deref(),
@@ -776,7 +795,9 @@ impl CoreEngine {
             if let Ok(diffs) = git_mgr.diff_snapshot(&tree_hash) {
                 diffs
                     .into_iter()
-                    .filter(|d| !d.file_path.starts_with(".davr") && !d.file_path.starts_with(".git"))
+                    .filter(|d| {
+                        !d.file_path.starts_with(".davr") && !d.file_path.starts_with(".git")
+                    })
                     .map(|d| d.file_path)
                     .collect()
             } else {

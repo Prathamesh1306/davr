@@ -103,7 +103,11 @@ impl TestFrameworkAdapter for CargoTestAdapter {
         let combined = format!("{}\n{}", stdout, stderr);
         for line in combined.lines() {
             let line = line.trim();
-            if line.starts_with("test ") && (line.ends_with("... ok") || line.ends_with("... FAILED") || line.ends_with("... ignored")) {
+            if line.starts_with("test ")
+                && (line.ends_with("... ok")
+                    || line.ends_with("... FAILED")
+                    || line.ends_with("... ignored"))
+            {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 3 {
                     let test_name = parts[1].to_string();
@@ -195,7 +199,11 @@ impl TestFrameworkAdapter for PytestAdapter {
         let combined = format!("{}\n{}", stdout, stderr);
         for line in combined.lines() {
             let line = line.trim();
-            if line.contains("::") && (line.ends_with("PASSED") || line.ends_with("FAILED") || line.ends_with("SKIPPED")) {
+            if line.contains("::")
+                && (line.ends_with("PASSED")
+                    || line.ends_with("FAILED")
+                    || line.ends_with("SKIPPED"))
+            {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if let Some(first) = parts.first() {
                     let test_name = first.to_string();
@@ -287,16 +295,21 @@ impl TestFrameworkAdapter for JestAdapter {
             let line = line.trim();
             if line.starts_with("✓ ") || line.starts_with("√ ") || line.starts_with("PASS ") {
                 passed += 1;
-                let test_name = line.trim_start_matches(|c| c == '✓' || c == '√' || c == ' ').to_string();
+                let test_name = line
+                    .trim_start_matches(|c| c == '✓' || c == '√' || c == ' ')
+                    .to_string();
                 test_cases.push(TestCaseResult {
                     name: test_name,
                     status: TestCaseStatus::Passed,
                     duration_ms: None,
                     error_message: None,
                 });
-            } else if line.starts_with("✕ ") || line.starts_with("× ") || line.starts_with("FAIL ") {
+            } else if line.starts_with("✕ ") || line.starts_with("× ") || line.starts_with("FAIL ")
+            {
                 failed += 1;
-                let test_name = line.trim_start_matches(|c| c == '✕' || c == '×' || c == ' ').to_string();
+                let test_name = line
+                    .trim_start_matches(|c| c == '✕' || c == '×' || c == ' ')
+                    .to_string();
                 test_cases.push(TestCaseResult {
                     name: test_name,
                     status: TestCaseStatus::Failed,
@@ -305,7 +318,9 @@ impl TestFrameworkAdapter for JestAdapter {
                 });
             } else if line.starts_with("○ ") || line.starts_with("SKIP ") {
                 skipped += 1;
-                let test_name = line.trim_start_matches(|c| c == '○' || c == ' ').to_string();
+                let test_name = line
+                    .trim_start_matches(|c| c == '○' || c == ' ')
+                    .to_string();
                 test_cases.push(TestCaseResult {
                     name: test_name,
                     status: TestCaseStatus::Skipped,
@@ -373,7 +388,12 @@ impl TestFrameworkAdapter for GoTestAdapter {
             let line = line.trim();
             if line.starts_with("--- PASS: ") {
                 passed += 1;
-                let test_name = line.trim_start_matches("--- PASS: ").split_whitespace().next().unwrap_or("").to_string();
+                let test_name = line
+                    .trim_start_matches("--- PASS: ")
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
                 test_cases.push(TestCaseResult {
                     name: test_name,
                     status: TestCaseStatus::Passed,
@@ -382,7 +402,12 @@ impl TestFrameworkAdapter for GoTestAdapter {
                 });
             } else if line.starts_with("--- FAIL: ") {
                 failed += 1;
-                let test_name = line.trim_start_matches("--- FAIL: ").split_whitespace().next().unwrap_or("").to_string();
+                let test_name = line
+                    .trim_start_matches("--- FAIL: ")
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
                 test_cases.push(TestCaseResult {
                     name: test_name,
                     status: TestCaseStatus::Failed,
@@ -391,7 +416,12 @@ impl TestFrameworkAdapter for GoTestAdapter {
                 });
             } else if line.starts_with("--- SKIP: ") {
                 skipped += 1;
-                let test_name = line.trim_start_matches("--- SKIP: ").split_whitespace().next().unwrap_or("").to_string();
+                let test_name = line
+                    .trim_start_matches("--- SKIP: ")
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
                 test_cases.push(TestCaseResult {
                     name: test_name,
                     status: TestCaseStatus::Skipped,
@@ -444,7 +474,10 @@ impl TestRunner {
     }
 
     /// Detects active test framework adapters for a project
-    pub fn detect_adapters<'a>(&'a self, project_root: &Path) -> Vec<&'a Box<dyn TestFrameworkAdapter>> {
+    pub fn detect_adapters<'a>(
+        &'a self,
+        project_root: &Path,
+    ) -> Vec<&'a Box<dyn TestFrameworkAdapter>> {
         self.adapters
             .iter()
             .filter(|adapter| adapter.detect(project_root))
@@ -459,14 +492,15 @@ impl TestRunner {
         filter: Option<&str>,
         timeout_seconds: u64,
     ) -> Result<Vec<TestSuiteResult>> {
-        let active_adapters: Vec<&Box<dyn TestFrameworkAdapter>> = if let Some(fw) = framework_override {
-            self.adapters
-                .iter()
-                .filter(|a| a.framework_name() == fw)
-                .collect()
-        } else {
-            self.detect_adapters(project_root)
-        };
+        let active_adapters: Vec<&Box<dyn TestFrameworkAdapter>> =
+            if let Some(fw) = framework_override {
+                self.adapters
+                    .iter()
+                    .filter(|a| a.framework_name() == fw)
+                    .collect()
+            } else {
+                self.detect_adapters(project_root)
+            };
 
         if active_adapters.is_empty() {
             return Err(DavrError::General(
@@ -517,7 +551,8 @@ impl TestRunner {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
                     let exit_code = output.status.code().unwrap_or(1);
 
-                    let suite_result = adapter.parse_output(&stdout, &stderr, exit_code, duration_ms);
+                    let suite_result =
+                        adapter.parse_output(&stdout, &stderr, exit_code, duration_ms);
                     results.push(suite_result);
                 }
                 Err(e) => {
@@ -605,11 +640,7 @@ impl TestRunner {
                 let _ = conn.execute(
                     "INSERT OR IGNORE INTO test_cases (id, test_file_id, test_name)
                      VALUES (?1, ?2, ?3)",
-                    rusqlite::params![
-                        &test_case_id,
-                        &test_file_id,
-                        &tc.name,
-                    ],
+                    rusqlite::params![&test_case_id, &test_file_id, &tc.name,],
                 );
 
                 let _ = conn.execute(

@@ -12,20 +12,28 @@ enum Matcher {
 impl Matcher {
     fn from_pattern(pattern: &str) -> Result<Self> {
         if let Some(re) = pattern.strip_prefix("regex:") {
-            let compiled = Regex::new(re)
-                .map_err(|e| DavrError::Security(format!("Invalid regex pattern '{}': {}", re, e)))?;
+            let compiled = Regex::new(re).map_err(|e| {
+                DavrError::Security(format!("Invalid regex pattern '{}': {}", re, e))
+            })?;
             Ok(Self::Regex(compiled))
         } else if let Some(gl) = pattern.strip_prefix("glob:") {
-            let compiled = GlobPattern::new(gl)
-                .map_err(|e| DavrError::Security(format!("Invalid glob pattern '{}': {}", gl, e)))?;
+            let compiled = GlobPattern::new(gl).map_err(|e| {
+                DavrError::Security(format!("Invalid glob pattern '{}': {}", gl, e))
+            })?;
             Ok(Self::Glob(compiled))
-        } else if pattern.contains(r"\s") || pattern.contains(r"\d") || pattern.contains(r"\w") || pattern.contains(".*") {
-            let compiled = Regex::new(pattern)
-                .map_err(|e| DavrError::Security(format!("Invalid pattern '{}': {}", pattern, e)))?;
+        } else if pattern.contains(r"\s")
+            || pattern.contains(r"\d")
+            || pattern.contains(r"\w")
+            || pattern.contains(".*")
+        {
+            let compiled = Regex::new(pattern).map_err(|e| {
+                DavrError::Security(format!("Invalid pattern '{}': {}", pattern, e))
+            })?;
             Ok(Self::Regex(compiled))
         } else {
-            let compiled = GlobPattern::new(pattern)
-                .map_err(|e| DavrError::Security(format!("Invalid pattern '{}': {}", pattern, e)))?;
+            let compiled = GlobPattern::new(pattern).map_err(|e| {
+                DavrError::Security(format!("Invalid pattern '{}': {}", pattern, e))
+            })?;
             Ok(Self::Glob(compiled))
         }
     }
@@ -59,8 +67,9 @@ impl SecurityEngine {
         let mut redact = Vec::new();
         for pattern in &config.redact_patterns {
             let re_str = pattern.strip_prefix("regex:").unwrap_or(pattern);
-            let compiled = Regex::new(re_str)
-                .map_err(|e| DavrError::Security(format!("Invalid redact pattern '{}': {}", re_str, e)))?;
+            let compiled = Regex::new(re_str).map_err(|e| {
+                DavrError::Security(format!("Invalid redact pattern '{}': {}", re_str, e))
+            })?;
             redact.push(compiled);
         }
 
@@ -109,9 +118,9 @@ impl SecurityEngine {
                 .canonicalize()
                 .map_err(|e| DavrError::Security(format!("Cannot canonicalize path: {}", e)))?
         } else if let Some(parent) = target_path.parent() {
-            let parent_canonical = parent
-                .canonicalize()
-                .map_err(|e| DavrError::Security(format!("Cannot canonicalize parent path: {}", e)))?;
+            let parent_canonical = parent.canonicalize().map_err(|e| {
+                DavrError::Security(format!("Cannot canonicalize parent path: {}", e))
+            })?;
             let file_name = target_path.file_name().ok_or_else(|| {
                 DavrError::Security("Target path has no valid filename".to_string())
             })?;
@@ -142,17 +151,17 @@ mod tests {
     #[test]
     fn test_policy_evaluation() {
         let config = SecurityConfig {
-            blocked_commands: vec![r"regex:^rm\s+-rf\s+/".into(), "glob:git push --force*".into()],
+            blocked_commands: vec![
+                r"regex:^rm\s+-rf\s+/".into(),
+                "glob:git push --force*".into(),
+            ],
             confirm_commands: vec!["glob:git push*".into()],
             redact_patterns: vec!["regex:sk-[A-Za-z0-9]{20,}".into()],
         };
 
         let engine = SecurityEngine::from_config(&config).unwrap();
 
-        assert_eq!(
-            engine.evaluate_command("rm -rf /"),
-            PolicyDecision::Blocked
-        );
+        assert_eq!(engine.evaluate_command("rm -rf /"), PolicyDecision::Blocked);
         assert_eq!(
             engine.evaluate_command("git push --force origin main"),
             PolicyDecision::Blocked

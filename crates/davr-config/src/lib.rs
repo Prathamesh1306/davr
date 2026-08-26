@@ -273,10 +273,12 @@ impl Config {
     pub fn load_from_dir(project_root: impl AsRef<Path>) -> Result<Self> {
         let config_file = project_root.as_ref().join(".davr").join("config.toml");
         let mut config = if config_file.exists() {
-            let content = fs::read_to_string(&config_file)
-                .map_err(|e| DavrError::Config(format!("Failed to read {}: {}", config_file.display(), e)))?;
-            toml::from_str::<Config>(&content)
-                .map_err(|e| DavrError::Config(format!("Failed to parse {}: {}", config_file.display(), e)))?
+            let content = fs::read_to_string(&config_file).map_err(|e| {
+                DavrError::Config(format!("Failed to read {}: {}", config_file.display(), e))
+            })?;
+            toml::from_str::<Config>(&content).map_err(|e| {
+                DavrError::Config(format!("Failed to parse {}: {}", config_file.display(), e))
+            })?
         } else {
             Config::default()
         };
@@ -330,7 +332,8 @@ impl Config {
 
 fn validate_pattern(pattern: &str) -> Result<()> {
     if let Some(re) = pattern.strip_prefix("regex:") {
-        Regex::new(re).map_err(|e| DavrError::Config(format!("Invalid regex pattern '{}': {}", re, e)))?;
+        Regex::new(re)
+            .map_err(|e| DavrError::Config(format!("Invalid regex pattern '{}': {}", re, e)))?;
     } else if let Some(gl) = pattern.strip_prefix("glob:") {
         glob::Pattern::new(gl)
             .map_err(|e| DavrError::Config(format!("Invalid glob pattern '{}': {}", gl, e)))?;
@@ -369,7 +372,10 @@ mod tests {
     #[test]
     fn test_invalid_pattern_fails_validation() {
         let mut config = Config::default();
-        config.security.blocked_commands.push("regex:[invalid".into());
+        config
+            .security
+            .blocked_commands
+            .push("regex:[invalid".into());
         assert!(config.validate().is_err());
     }
 }

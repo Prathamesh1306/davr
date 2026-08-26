@@ -77,9 +77,18 @@ impl ImpactAnalyzer {
 
         for r in rows {
             if let Ok((from_id, to_id, conf)) = r {
-                let from_path = from_id.strip_prefix(&format!("{}:", project_id.as_str())).unwrap_or(&from_id).to_string();
-                let to_path = to_id.strip_prefix(&format!("{}:", project_id.as_str())).unwrap_or(&to_id).to_string();
-                reverse_graph.entry(to_path).or_default().push((from_path, conf));
+                let from_path = from_id
+                    .strip_prefix(&format!("{}:", project_id.as_str()))
+                    .unwrap_or(&from_id)
+                    .to_string();
+                let to_path = to_id
+                    .strip_prefix(&format!("{}:", project_id.as_str()))
+                    .unwrap_or(&to_id)
+                    .to_string();
+                reverse_graph
+                    .entry(to_path)
+                    .or_default()
+                    .push((from_path, conf));
             }
         }
 
@@ -142,7 +151,9 @@ impl ImpactAnalyzer {
             .map_err(|e| DavrError::Database(e.to_string()))?;
 
         let test_rows = test_stmt
-            .query_map(rusqlite::params![project_id.as_str()], |row| row.get::<_, String>(0))
+            .query_map(rusqlite::params![project_id.as_str()], |row| {
+                row.get::<_, String>(0)
+            })
             .map_err(|e| DavrError::Database(e.to_string()))?;
 
         for r in test_rows {

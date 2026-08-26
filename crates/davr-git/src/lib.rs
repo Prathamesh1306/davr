@@ -104,7 +104,8 @@ impl RollbackPlanner {
                 continue;
             }
 
-            if scope == RollbackScope::SessionIntersection && !session_touched_files.contains(path) {
+            if scope == RollbackScope::SessionIntersection && !session_touched_files.contains(path)
+            {
                 excluded_files.push(path.clone());
                 continue;
             }
@@ -162,7 +163,8 @@ impl RollbackPlanner {
                             "File was deleted after agent session completed.".to_string()
                         }
                         (FileState::Missing, FileState::Present(_)) => {
-                            "File was created or modified after agent session completed.".to_string()
+                            "File was created or modified after agent session completed."
+                                .to_string()
                         }
                         (FileState::Present(b_hash), FileState::Present(c_hash)) => {
                             format!(
@@ -277,10 +279,18 @@ impl<'a> RollbackExecutor<'a> {
         }
 
         // 1. Prepare Transaction Directory
-        let txn_dir = self.project_root.join(".davr").join("rollback-txn").join(rollback_id.as_str());
+        let txn_dir = self
+            .project_root
+            .join(".davr")
+            .join("rollback-txn")
+            .join(rollback_id.as_str());
         let backups_dir = txn_dir.join("backups");
-        fs::create_dir_all(&backups_dir)
-            .map_err(|e| DavrError::Git(format!("Failed to create rollback transaction journal: {}", e)))?;
+        fs::create_dir_all(&backups_dir).map_err(|e| {
+            DavrError::Git(format!(
+                "Failed to create rollback transaction journal: {}",
+                e
+            ))
+        })?;
 
         let manifest_path = txn_dir.join("manifest.json");
         let mut manifest = RollbackJournalManifest {
@@ -291,8 +301,11 @@ impl<'a> RollbackExecutor<'a> {
             backed_up_files: Vec::new(),
             created_at: Utc::now().timestamp_millis(),
         };
-        fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap())
-            .map_err(|e| DavrError::Git(e.to_string()))?;
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .map_err(|e| DavrError::Git(e.to_string()))?;
 
         // 2. Validate path containment & Stage Backups
         for op in &plan.operations {
@@ -307,18 +320,25 @@ impl<'a> RollbackExecutor<'a> {
                 if let Some(parent) = backup_file.parent() {
                     let _ = fs::create_dir_all(parent);
                 }
-                fs::copy(&validated_target, &backup_file)
-                    .map_err(|e| DavrError::Git(format!("Failed to backup file {}: {}", rel_path, e)))?;
+                fs::copy(&validated_target, &backup_file).map_err(|e| {
+                    DavrError::Git(format!("Failed to backup file {}: {}", rel_path, e))
+                })?;
                 manifest.backed_up_files.push(rel_path.clone());
             }
         }
 
         manifest.status = JournalStatus::BackedUp;
-        let _ = fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap());
+        let _ = fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        );
 
         // 3. Apply Operations
         manifest.status = JournalStatus::Applying;
-        let _ = fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap());
+        let _ = fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        );
 
         let mut restored = Vec::new();
         let mut deleted = Vec::new();
@@ -326,7 +346,11 @@ impl<'a> RollbackExecutor<'a> {
 
         for op in &plan.operations {
             match op {
-                RollbackOperation::RestoreFile { file_path, blob_oid, .. } => {
+                RollbackOperation::RestoreFile {
+                    file_path,
+                    blob_oid,
+                    ..
+                } => {
                     let target = self.project_root.join(file_path);
                     if let Some(parent) = target.parent() {
                         let _ = fs::create_dir_all(parent);
@@ -334,13 +358,19 @@ impl<'a> RollbackExecutor<'a> {
                     match Oid::from_str(blob_oid).and_then(|oid| self.repo.find_blob(oid)) {
                         Ok(blob) => {
                             if let Err(e) = fs::write(&target, blob.content()) {
-                                apply_error = Some(format!("Failed to write restored file {}: {}", file_path, e));
+                                apply_error = Some(format!(
+                                    "Failed to write restored file {}: {}",
+                                    file_path, e
+                                ));
                                 break;
                             }
                             restored.push(file_path.clone());
                         }
                         Err(e) => {
-                            apply_error = Some(format!("Failed to find blob {} for {}: {}", blob_oid, file_path, e));
+                            apply_error = Some(format!(
+                                "Failed to find blob {} for {}: {}",
+                                blob_oid, file_path, e
+                            ));
                             break;
                         }
                     }
@@ -349,7 +379,8 @@ impl<'a> RollbackExecutor<'a> {
                     let target = self.project_root.join(file_path);
                     if target.exists() {
                         if let Err(e) = fs::remove_file(&target) {
-                            apply_error = Some(format!("Failed to remove added file {}: {}", file_path, e));
+                            apply_error =
+                                Some(format!("Failed to remove added file {}: {}", file_path, e));
                             break;
                         }
                     }
@@ -370,7 +401,10 @@ impl<'a> RollbackExecutor<'a> {
                 }
             }
             manifest.status = JournalStatus::Aborted;
-            let _ = fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap());
+            let _ = fs::write(
+                &manifest_path,
+                serde_json::to_string_pretty(&manifest).unwrap(),
+            );
 
             return Ok(RollbackReport {
                 id: rollback_id,
@@ -388,7 +422,10 @@ impl<'a> RollbackExecutor<'a> {
 
         // 5. Commit Transaction
         manifest.status = JournalStatus::Committed;
-        let _ = fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap());
+        let _ = fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        );
         let _ = fs::remove_dir_all(&txn_dir); // Clean up transaction journal after commit
 
         Ok(RollbackReport {
@@ -539,7 +576,9 @@ impl GitManager {
             .map_err(|e| DavrError::Database(e.to_string()))?;
 
         let rows = stmt
-            .query_map(rusqlite::params![project_id.as_str()], |row| row.get::<_, String>(0))
+            .query_map(rusqlite::params![project_id.as_str()], |row| {
+                row.get::<_, String>(0)
+            })
             .map_err(|e| DavrError::Database(e.to_string()))?;
 
         let mut all_ids = Vec::new();
@@ -567,7 +606,10 @@ impl GitManager {
             pruned += 1;
         }
 
-        info!(pruned = pruned, "Pruned old Git snapshots according to retention policy");
+        info!(
+            pruned = pruned,
+            "Pruned old Git snapshots according to retention policy"
+        );
         Ok(pruned)
     }
 
@@ -687,7 +729,12 @@ impl GitManager {
 // Internal Helpers
 // =====================================================================
 
-fn collect_tree_blobs(repo: &Repository, tree: &Tree, prefix: &Path, map: &mut HashMap<String, String>) {
+fn collect_tree_blobs(
+    repo: &Repository,
+    tree: &Tree,
+    prefix: &Path,
+    map: &mut HashMap<String, String>,
+) {
     for entry in tree.iter() {
         let name = entry.name().unwrap_or("");
         let path = prefix.join(name);
@@ -769,9 +816,9 @@ fn validate_path_containment(project_root: &Path, rel_path: &str) -> Result<Path
     let target = canonical_root.join(rel_path);
 
     if target.exists() {
-        let canonical_target = target
-            .canonicalize()
-            .map_err(|e| DavrError::Security(format!("Failed to canonicalize path {}: {}", rel_path, e)))?;
+        let canonical_target = target.canonicalize().map_err(|e| {
+            DavrError::Security(format!("Failed to canonicalize path {}: {}", rel_path, e))
+        })?;
         if !canonical_target.starts_with(&canonical_root) {
             return Err(DavrError::Security(format!(
                 "Symlink points outside repository: {}",

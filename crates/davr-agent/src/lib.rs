@@ -106,11 +106,7 @@ impl ProcessSupervisor {
     }
 
     /// Spawns the agent process inside a process group and supervises it to completion
-    pub async fn run_supervised(
-        &self,
-        command_line: &str,
-        args: &[String],
-    ) -> Result<i32> {
+    pub async fn run_supervised(&self, command_line: &str, args: &[String]) -> Result<i32> {
         let adapter = select_adapter(&self.config.default_agent);
         let env_map = adapter.build_env(&self.config);
 

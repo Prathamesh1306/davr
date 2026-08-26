@@ -40,7 +40,12 @@ impl LanguageAdapter for TypeScriptAdapter {
     }
 
     fn recognized_lockfiles(&self) -> &[&str] {
-        &["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"]
+        &[
+            "package-lock.json",
+            "pnpm-lock.yaml",
+            "yarn.lock",
+            "bun.lockb",
+        ]
     }
 
     fn default_required_tools(&self) -> Vec<RequiredTool> {
@@ -230,7 +235,10 @@ impl EnvironmentValidator {
                         name: format!("{}_lockfile_present", adapter.name()),
                         category: CheckCategory::Lockfile,
                         status: CheckStatus::Warn,
-                        detail: format!("No lockfile found for {}; builds may be non-deterministic", adapter.name()),
+                        detail: format!(
+                            "No lockfile found for {}; builds may be non-deterministic",
+                            adapter.name()
+                        ),
                         tool_name: None,
                         tool_version: None,
                         resolved_path: None,
@@ -317,7 +325,10 @@ impl EnvironmentValidator {
                 name: format!("{}_package_manager_{}", ecosystem, pm_name),
                 category: CheckCategory::PackageManager,
                 status: CheckStatus::Fail,
-                detail: format!("Package manager '{}' for {} is missing on PATH", pm_name, ecosystem),
+                detail: format!(
+                    "Package manager '{}' for {} is missing on PATH",
+                    pm_name, ecosystem
+                ),
                 tool_name: Some(pm_name.to_string()),
                 tool_version: None,
                 resolved_path: None,
@@ -354,7 +365,8 @@ impl EnvironmentValidator {
                 name: "git_repository_initialized".into(),
                 category: CheckCategory::Git,
                 status: CheckStatus::Warn,
-                detail: "Directory is not a Git repository; snapshot safety requires git init".into(),
+                detail: "Directory is not a Git repository; snapshot safety requires git init"
+                    .into(),
                 tool_name: Some("git".into()),
                 tool_version: None,
                 resolved_path: None,

@@ -89,8 +89,14 @@ async fn test_end_to_end_session_and_rollback_intersection() {
     // 6. Verify filesystem state
     let main_content = fs::read_to_string(&initial_file).unwrap();
     assert_eq!(main_content, "initial main content\n");
-    assert!(!root.join("agent_file.txt").exists(), "Agent file must be deleted on rollback");
-    assert!(root.join("dev_notes.txt").exists(), "Developer file must NOT be touched");
+    assert!(
+        !root.join("agent_file.txt").exists(),
+        "Agent file must be deleted on rollback"
+    );
+    assert!(
+        root.join("dev_notes.txt").exists(),
+        "Developer file must NOT be touched"
+    );
     assert_eq!(
         fs::read_to_string(&dev_file).unwrap(),
         "developer independent work\n"

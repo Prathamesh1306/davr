@@ -109,7 +109,12 @@ impl AstEngine {
     }
 
     /// Scans, parses, and persists all source files, symbols, and dependency edges in SQLite
-    pub fn index_project(&self, db: &Database, project_id: &ProjectId, project_root: &Path) -> Result<usize> {
+    pub fn index_project(
+        &self,
+        db: &Database,
+        project_id: &ProjectId,
+        project_root: &Path,
+    ) -> Result<usize> {
         let mut parsed_files = Vec::new();
         let mut file_map = HashMap::new();
 
@@ -161,7 +166,10 @@ impl AstEngine {
             .map_err(|e| DavrError::Database(e.to_string()))?;
 
             // Clear old symbols for this file
-            let _ = conn.execute("DELETE FROM source_symbols WHERE source_file_id = ?1", [&source_file_id]);
+            let _ = conn.execute(
+                "DELETE FROM source_symbols WHERE source_file_id = ?1",
+                [&source_file_id],
+            );
 
             for sym in &pf.symbols {
                 let symbol_id = uuid::Uuid::new_v4().to_string();
@@ -205,7 +213,10 @@ impl AstEngine {
             );
         }
 
-        info!(files = total_files, "Indexed project AST symbols and dependency graph");
+        info!(
+            files = total_files,
+            "Indexed project AST symbols and dependency graph"
+        );
         Ok(total_files)
     }
 }
@@ -218,8 +229,10 @@ fn parse_rust(content: &str) -> (Vec<SourceSymbol>, Vec<String>) {
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
 
-    let fn_re = Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([a-zA-Z0-9_]+)").unwrap();
-    let struct_re = Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+([a-zA-Z0-9_]+)").unwrap();
+    let fn_re =
+        Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([a-zA-Z0-9_]+)").unwrap();
+    let struct_re =
+        Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+([a-zA-Z0-9_]+)").unwrap();
     let enum_re = Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?enum\s+([a-zA-Z0-9_]+)").unwrap();
     let trait_re = Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?trait\s+([a-zA-Z0-9_]+)").unwrap();
     let use_re = Regex::new(r"(?m)^\s*(?:pub\s+)?use\s+([a-zA-Z0-9_:]+)").unwrap();
@@ -294,7 +307,8 @@ fn parse_typescript(content: &str) -> (Vec<SourceSymbol>, Vec<String>) {
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
 
-    let fn_re = Regex::new(r"(?m)^\s*(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)").unwrap();
+    let fn_re =
+        Regex::new(r"(?m)^\s*(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)").unwrap();
     let class_re = Regex::new(r"(?m)^\s*(?:export\s+)?class\s+([a-zA-Z0-9_]+)").unwrap();
     let iface_re = Regex::new(r"(?m)^\s*(?:export\s+)?interface\s+([a-zA-Z0-9_]+)").unwrap();
     let type_re = Regex::new(r"(?m)^\s*(?:export\s+)?type\s+([a-zA-Z0-9_]+)").unwrap();
