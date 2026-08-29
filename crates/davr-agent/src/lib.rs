@@ -1,6 +1,8 @@
 use davr_config::AgentConfig;
 use davr_types::{DavrError, Result};
+#[cfg(unix)]
 use nix::sys::signal::{kill, Signal};
+#[cfg(unix)]
 use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::env;
@@ -161,28 +163,46 @@ impl ProcessSupervisor {
             }
             _ = timeout_fut => {
                 warn!(pid = child_id, "Agent session exceeded timeout; killing process group");
-                signal_process_group(child_id, Signal::SIGTERM);
+                terminate_process_tree(child_id, false);
                 sleep(Duration::from_millis(500)).await;
-                signal_process_group(child_id, Signal::SIGKILL);
+                terminate_process_tree(child_id, true);
                 Err(DavrError::Agent("Agent session timed out".into()))
             }
             _ = tokio::signal::ctrl_c() => {
-                info!(pid = child_id, "Received Ctrl+C; forwarding SIGINT to agent process group");
-                signal_process_group(child_id, Signal::SIGINT);
+                info!(pid = child_id, "Received Ctrl+C; forwarding termination signal to agent process tree");
+                terminate_process_tree(child_id, false);
                 sleep(Duration::from_millis(500)).await;
-                signal_process_group(child_id, Signal::SIGTERM);
+                terminate_process_tree(child_id, true);
                 Err(DavrError::Agent("Session aborted by user via Ctrl+C".into()))
             }
         }
     }
 }
 
-fn signal_process_group(pid: u32, signal: Signal) {
+fn terminate_process_tree(pid: u32, force: bool) {
+    if pid == 0 {
+        return;
+    }
     #[cfg(unix)]
-    if pid > 0 {
-        // Negative PID sends the signal to the entire process group
+    {
+        // Negative PID sends signal to the entire process group
         let pgid = Pid::from_raw(-(pid as i32));
-        let _ = kill(pgid, signal);
+        let sig = if force {
+            Signal::SIGKILL
+        } else {
+            Signal::SIGTERM
+        };
+        let _ = kill(pgid, sig);
+    }
+    #[cfg(windows)]
+    {
+        // On Windows, taskkill /F /T kills the specified process and any child processes started by it
+        let mut cmd = std::process::Command::new("taskkill");
+        if force {
+            cmd.arg("/F");
+        }
+        cmd.args(["/T", "/PID", &pid.to_string()]);
+        let _ = cmd.output();
     }
 }
 

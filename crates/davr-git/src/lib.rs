@@ -475,6 +475,13 @@ impl GitManager {
         Ok(!statuses.is_empty())
     }
 
+    /// Returns the current Git branch name, or None if detached HEAD or not a repo
+    pub fn current_branch(&self) -> Option<String> {
+        let repo = Repository::discover(&self.project_root).ok()?;
+        let head = repo.head().ok()?;
+        head.shorthand().map(|s| s.to_string())
+    }
+
     /// Creates a content-addressed snapshot tree capturing staged, unstaged, and untracked files
     pub fn create_snapshot(
         &self,
@@ -582,10 +589,8 @@ impl GitManager {
             .map_err(|e| DavrError::Database(e.to_string()))?;
 
         let mut all_ids = Vec::new();
-        for r in rows {
-            if let Ok(id) = r {
-                all_ids.push(id);
-            }
+        for id in rows.flatten() {
+            all_ids.push(id);
         }
 
         if all_ids.len() <= max_snapshots {

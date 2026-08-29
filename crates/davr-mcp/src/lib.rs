@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tracing::{debug, error, info};
+use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
@@ -35,6 +35,7 @@ pub struct JsonRpcError {
 }
 
 pub struct McpServer {
+    #[allow(dead_code)]
     project_root: PathBuf,
     engine: CoreEngine,
 }

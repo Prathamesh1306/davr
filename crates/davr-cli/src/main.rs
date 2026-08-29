@@ -45,8 +45,14 @@ enum Commands {
     #[command(about = "Run environment validation checks (standalone)")]
     Doctor(DoctorArgs),
 
+    #[command(about = "Display project status, environment health, and active session summary")]
+    Status(StatusArgs),
+
     #[command(about = "Wrap and supervise an AI agent execution session")]
     Run(RunArgs),
+
+    #[command(about = "Execute a single supervised command under security policy")]
+    Exec(ExecArgs),
 
     #[command(about = "Session management")]
     Session(SessionArgs),
@@ -77,6 +83,15 @@ enum Commands {
 
     #[command(about = "Start Model Context Protocol (MCP) stdio JSON-RPC server")]
     Mcp,
+
+    #[command(about = "Database maintenance, migration, backup, and integrity verification")]
+    Db(DbArgs),
+
+    #[command(about = "Prune expired snapshots, telemetry events, and verification records")]
+    Clean(CleanArgs),
+
+    #[command(about = "Export telemetry events and session data to JSONL")]
+    Export(ExportArgs),
 
     #[command(about = "Configuration management")]
     Config(ConfigArgs),
@@ -159,6 +174,25 @@ struct RunArgs {
 }
 
 #[derive(Args, Debug)]
+struct StatusArgs {
+    #[arg(long, help = "Filter by specific session ID")]
+    session: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct ExecArgs {
+    #[arg(long, help = "Attach command telemetry to an existing session")]
+    session: Option<String>,
+
+    #[arg(
+        last = true,
+        required = true,
+        help = "Command and arguments to execute under DAVR policy"
+    )]
+    command: Vec<String>,
+}
+
+#[derive(Args, Debug)]
 struct SessionArgs {
     #[command(subcommand)]
     subcommand: SessionSubcommand,
@@ -170,6 +204,12 @@ enum SessionSubcommand {
     List {
         #[arg(long, default_value_t = 10)]
         limit: usize,
+    },
+
+    #[command(about = "Show detailed information about a specific session")]
+    Show {
+        #[arg(help = "Session ID to inspect")]
+        id: String,
     },
 }
 
@@ -192,6 +232,18 @@ struct SnapshotArgs {
 enum SnapshotSubcommand {
     #[command(about = "List captured snapshots")]
     List,
+
+    #[command(about = "Create a manual working tree snapshot")]
+    Create {
+        #[arg(short, long, help = "Description or reason for the snapshot")]
+        reason: Option<String>,
+    },
+
+    #[command(about = "Show details and files for a specific snapshot")]
+    Show {
+        #[arg(help = "Snapshot ID or tree hash prefix")]
+        id: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -222,6 +274,58 @@ struct DiffArgs {
 }
 
 #[derive(Args, Debug)]
+struct DbArgs {
+    #[command(subcommand)]
+    subcommand: DbSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum DbSubcommand {
+    #[command(about = "Apply pending SQLite database migrations")]
+    Migrate,
+
+    #[command(about = "Perform an atomic online backup (VACUUM INTO)")]
+    Backup {
+        #[arg(short, long, help = "Destination database path")]
+        out: Option<PathBuf>,
+    },
+
+    #[command(about = "Verify database integrity and foreign key constraints")]
+    Verify,
+
+    #[command(about = "Display table row counts and disk usage statistics")]
+    Stats,
+}
+
+#[derive(Args, Debug)]
+struct CleanArgs {
+    #[arg(long, help = "Prune items older than specified days")]
+    older_than: Option<u32>,
+
+    #[arg(long, help = "Also prune finished past agent sessions")]
+    all: bool,
+}
+
+#[derive(Args, Debug)]
+struct ExportArgs {
+    #[arg(long, help = "Filter telemetry by session ID")]
+    session: Option<String>,
+
+    #[arg(long, help = "Filter events occurred since timestamp in milliseconds")]
+    since: Option<i64>,
+
+    #[arg(
+        long,
+        default_value = "jsonl",
+        help = "Output format: 'jsonl' or 'json'"
+    )]
+    format: String,
+
+    #[arg(short, long, help = "Write output to file path instead of stdout")]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
 struct ConfigArgs {
     #[command(subcommand)]
     subcommand: ConfigSubcommand,
@@ -231,6 +335,20 @@ struct ConfigArgs {
 enum ConfigSubcommand {
     #[command(about = "Show merged effective configuration")]
     Show,
+
+    #[command(about = "Get specific configuration value by dotted key")]
+    Get {
+        #[arg(help = "Dotted key path, e.g. agent.default_agent")]
+        key: String,
+    },
+
+    #[command(about = "Set configuration value by dotted key")]
+    Set {
+        #[arg(help = "Dotted key path, e.g. agent.timeout_seconds")]
+        key: String,
+        #[arg(help = "Value to set")]
+        value: String,
+    },
 
     #[command(about = "Validate configuration file syntax and patterns")]
     Validate,
@@ -344,6 +462,53 @@ async fn execute_command(
             }
         }
 
+        Commands::Status(args) => {
+            let status = engine.status(args.session.as_deref())?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status).unwrap());
+            } else if !quiet {
+                println!("\n{}", "DAVR Project Status".bold().underline());
+                println!("  Project:    {}", status.project_name.bold());
+                println!("  Root:       {}", status.project_root);
+                println!("  Languages:  {}", status.languages.join(", "));
+                if let Some(ref br) = status.git_branch {
+                    println!("  Git Branch: {} (dirty: {})", br.cyan(), status.git_dirty);
+                }
+
+                println!("\n  {}", "Environment Health:".bold());
+                println!(
+                    "    Checks: {} ({} passed, {} warnings, {} failures)",
+                    status.environment_health.total_checks,
+                    status.environment_health.passed.to_string().green(),
+                    status.environment_health.warnings.to_string().yellow(),
+                    status.environment_health.failures.to_string().red(),
+                );
+
+                if let Some(ref sess) = status.last_session {
+                    println!("\n  {}", "Most Recent Session:".bold());
+                    println!("    ID:          {}", sess.id.dimmed());
+                    println!("    Agent:       {}", sess.agent_name.bold());
+                    println!("    Command:     {}", sess.command_line);
+                    println!("    Status:      {}", sess.status);
+                    if let Some(code) = sess.exit_code {
+                        println!("    Exit Code:   {}", code);
+                    }
+                    println!("    Files Touch: {}", sess.touched_files.len());
+                } else {
+                    println!("\n  No agent sessions recorded yet.");
+                }
+
+                if let Some(ref snap) = status.last_snapshot {
+                    println!("\n  {}", "Active Snapshot:".bold());
+                    println!("    ID:          {}", snap.id.dimmed());
+                    println!("    Tree Hash:   {:.10}", snap.tree_hash);
+                    println!("    Reason:      {}", snap.reason);
+                }
+                println!();
+            }
+            Ok(0)
+        }
+
         Commands::Run(args) => {
             let cmd = args
                 .agent_command
@@ -383,6 +548,34 @@ async fn execute_command(
             Ok(summary.exit_code)
         }
 
+        Commands::Exec(args) => {
+            let cmd = args
+                .command
+                .first()
+                .ok_or_else(|| DavrError::Config("Missing command to execute".into()))?;
+            let rest_args = &args.command[1..];
+
+            if !quiet && !json {
+                println!(
+                    "{} Executing supervised command `{}`...",
+                    "▶".cyan().bold(),
+                    cmd.bold()
+                );
+            }
+
+            let exit_code = engine.exec(cmd, rest_args, args.session.as_deref()).await?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "command": cmd,
+                        "exit_code": exit_code
+                    })
+                );
+            }
+            Ok(exit_code)
+        }
+
         Commands::Session(args) => match args.subcommand {
             SessionSubcommand::List { limit } => {
                 let sessions = engine.list_sessions(limit)?;
@@ -399,6 +592,32 @@ async fn execute_command(
                             s.command_line
                         );
                     }
+                }
+                Ok(0)
+            }
+            SessionSubcommand::Show { id } => {
+                let detail = engine.get_session_detail(&id)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&detail).unwrap());
+                } else {
+                    println!(
+                        "\n{}",
+                        format!("Agent Session {}", detail.id).bold().underline()
+                    );
+                    println!("  Agent:       {}", detail.agent_name.bold());
+                    println!("  Command:     {}", detail.command_line);
+                    println!("  Status:      {}", detail.status);
+                    if let Some(code) = detail.exit_code {
+                        println!("  Exit Code:   {}", code);
+                    }
+                    if let Some(dur) = detail.duration_ms {
+                        println!("  Duration:    {}ms", dur);
+                    }
+                    println!("  Files Modified ({}):", detail.touched_files.len());
+                    for f in &detail.touched_files {
+                        println!("    - {}", f);
+                    }
+                    println!();
                 }
                 Ok(0)
             }
@@ -438,6 +657,38 @@ async fn execute_command(
                             snap.dirty_before
                         );
                     }
+                }
+                Ok(0)
+            }
+            SnapshotSubcommand::Create { reason } => {
+                let snap = engine.create_snapshot(reason.as_deref())?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&snap).unwrap());
+                } else if !quiet {
+                    println!(
+                        "{} Created snapshot {} (tree: {:.10}, reason: {})",
+                        "✔".green().bold(),
+                        snap.id.dimmed(),
+                        snap.tree_hash,
+                        snap.reason
+                    );
+                }
+                Ok(0)
+            }
+            SnapshotSubcommand::Show { id } => {
+                let snap = engine.get_snapshot_detail(&id)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&snap).unwrap());
+                } else {
+                    println!("\n{}", format!("Snapshot {}", snap.id).bold().underline());
+                    println!("  Tree Hash:   {}", snap.tree_hash);
+                    println!("  Reason:      {}", snap.reason);
+                    println!("  Dirty Prior: {}", snap.dirty_before);
+                    println!("  Recorded Files ({}):", snap.files.len());
+                    for f in &snap.files {
+                        println!("    • {}", f);
+                    }
+                    println!();
                 }
                 Ok(0)
             }
@@ -755,6 +1006,142 @@ async fn execute_command(
             }
         }
 
+        Commands::Db(args) => match args.subcommand {
+            DbSubcommand::Migrate => {
+                engine.db_migrate()?;
+                if json {
+                    println!("{}", serde_json::json!({ "status": "migrated" }));
+                } else if !quiet {
+                    println!(
+                        "{} Database migrations applied successfully",
+                        "✔".green().bold()
+                    );
+                }
+                Ok(0)
+            }
+            DbSubcommand::Backup { out } => {
+                let path = engine.db_backup(out.as_deref())?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "backup_path": path.to_string_lossy() })
+                    );
+                } else if !quiet {
+                    println!(
+                        "{} Database backed up to {}",
+                        "✔".green().bold(),
+                        path.display().to_string().cyan()
+                    );
+                }
+                Ok(0)
+            }
+            DbSubcommand::Verify => {
+                let issues = engine.db_verify()?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "issues": issues,
+                            "status": if issues.is_empty() { "ok" } else { "issues_found" }
+                        })
+                    );
+                } else if !quiet {
+                    if issues.is_empty() {
+                        println!(
+                            "{} Database integrity and foreign key checks passed",
+                            "✔".green().bold()
+                        );
+                    } else {
+                        println!(
+                            "{} Found {} database integrity issues:",
+                            "✖".red().bold(),
+                            issues.len()
+                        );
+                        for issue in &issues {
+                            println!("  - {}", issue.red());
+                        }
+                    }
+                }
+                if issues.is_empty() {
+                    Ok(0)
+                } else {
+                    Ok(1)
+                }
+            }
+            DbSubcommand::Stats => {
+                let stats = engine.db_stats()?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&stats).unwrap());
+                } else if !quiet {
+                    println!("\n{}", "DAVR Database Statistics".bold().underline());
+                    println!(
+                        "  File Size:   {:.2} KB",
+                        stats.file_size_bytes as f64 / 1024.0
+                    );
+                    println!("\n  Table Row Counts:");
+                    let mut sorted_tables: Vec<_> = stats.table_counts.iter().collect();
+                    sorted_tables.sort_by_key(|a| a.0);
+                    for (tbl, count) in sorted_tables {
+                        println!("    {:<25} {}", tbl.dimmed(), count.to_string().bold());
+                    }
+                    println!();
+                }
+                Ok(0)
+            }
+        },
+
+        Commands::Clean(args) => {
+            let report = engine.clean(args.older_than, args.all)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+            } else if !quiet {
+                println!("{} Clean operation completed", "✔".green().bold());
+                println!(
+                    "  Telemetry events pruned:   {}",
+                    report.telemetry_events_pruned
+                );
+                println!(
+                    "  Verification runs pruned:  {}",
+                    report.verification_runs_pruned
+                );
+                println!("  Snapshots pruned:          {}", report.snapshots_pruned);
+                if args.all {
+                    println!("  Sessions pruned:           {}", report.sessions_pruned);
+                }
+            }
+            Ok(0)
+        }
+
+        Commands::Export(args) => {
+            let events = engine.export_telemetry(args.session.as_deref(), args.since)?;
+            let output_str = if args.format.to_lowercase() == "json" {
+                serde_json::to_string_pretty(&events).unwrap_or_default()
+            } else {
+                events
+                    .iter()
+                    .map(|ev| serde_json::to_string(ev).unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+
+            if let Some(ref out_path) = args.out {
+                std::fs::write(out_path, &output_str).map_err(|e| {
+                    DavrError::General(format!("Failed to write export file: {}", e))
+                })?;
+                if !quiet {
+                    println!(
+                        "{} Exported {} telemetry events to {}",
+                        "✔".green().bold(),
+                        events.len(),
+                        out_path.display()
+                    );
+                }
+            } else {
+                println!("{}", output_str);
+            }
+            Ok(0)
+        }
+
         Commands::Mcp => {
             let server = davr_mcp::McpServer::new(engine.project_root());
             server.run_stdio().await?;
@@ -768,6 +1155,34 @@ async fn execute_command(
                     println!("{}", serde_json::to_string_pretty(&config).unwrap());
                 } else {
                     println!("{}", config.to_toml_string()?);
+                }
+                Ok(0)
+            }
+            ConfigSubcommand::Get { key } => {
+                let config = Config::load_from_dir(engine.project_root())?;
+                let val = config.get_value(&key)?;
+                if json {
+                    println!("{}", serde_json::json!({ "key": key, "value": val }));
+                } else {
+                    println!("{}", val);
+                }
+                Ok(0)
+            }
+            ConfigSubcommand::Set { key, value } => {
+                let mut config = Config::load_from_dir(engine.project_root())?;
+                config.set_value(engine.project_root(), &key, &value)?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "key": key, "value": value, "status": "updated" })
+                    );
+                } else if !quiet {
+                    println!(
+                        "{} Updated {} = {}",
+                        "✔".green().bold(),
+                        key.bold(),
+                        value.cyan()
+                    );
                 }
                 Ok(0)
             }
@@ -795,7 +1210,7 @@ async fn execute_command(
                     })
                 );
             } else {
-                println!("{} {}", "davr".bold(), "0.1.0");
+                println!("{} 0.1.0", "davr".bold());
                 println!("  SQLite: bundled (WAL mode)");
                 println!("  Architecture: Deterministic Agent Verification Runtime");
             }

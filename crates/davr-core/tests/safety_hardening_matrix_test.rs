@@ -218,7 +218,7 @@ async fn test_matrix_secret_redaction_in_persistence() {
         .unwrap();
 
     // Verify in SQLite database that raw secret was REDACTED before persistence
-    let db = Database::open(&root.join(".davr/davr.db")).unwrap();
+    let db = Database::open(root.join(".davr/davr.db")).unwrap();
     let conn = db.inner();
     let cmd: String = conn
         .query_row(

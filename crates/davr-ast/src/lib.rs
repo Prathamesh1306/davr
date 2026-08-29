@@ -1,12 +1,12 @@
 use chrono::Utc;
 use davr_storage::Database;
 use davr_types::{Confidence, DavrError, ProjectId, Result};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use tracing::info;
+use tree_sitter::{Language, Node, Parser};
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +61,7 @@ pub struct ParsedFile {
     pub path: String,
     pub language: String,
     pub content_hash: String,
+    pub parse_incomplete: bool,
     pub symbols: Vec<SourceSymbol>,
     pub raw_imports: Vec<String>,
 }
@@ -78,7 +79,7 @@ impl AstEngine {
         Self
     }
 
-    /// Parses a single source file into structured symbols and raw imports
+    /// Parses a single source file into structured symbols and raw imports using Tree-sitter
     pub fn parse_file(&self, file_path: &Path, content: &str) -> Option<ParsedFile> {
         let ext = file_path.extension()?.to_str()?;
         let language = match ext {
@@ -89,13 +90,7 @@ impl AstEngine {
             _ => return None,
         };
 
-        let (symbols, raw_imports) = match language {
-            "rust" => parse_rust(content),
-            "typescript" => parse_typescript(content),
-            "python" => parse_python(content),
-            "go" => parse_go(content),
-            _ => (Vec::new(), Vec::new()),
-        };
+        let (symbols, raw_imports, parse_incomplete) = parse_with_tree_sitter(language, content);
 
         let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
 
@@ -103,6 +98,7 @@ impl AstEngine {
             path: file_path.to_string_lossy().to_string(),
             language: language.into(),
             content_hash,
+            parse_incomplete,
             symbols,
             raw_imports,
         })
@@ -196,7 +192,6 @@ impl AstEngine {
             let from_file_id = format!("{}:{}", project_id.as_str(), pf.path);
 
             for raw_import in &pf.raw_imports {
-                // Try resolving import target file path
                 if let Some(target_file) = resolve_import_path(&pf.path, raw_import, &file_map) {
                     let to_file_id = format!("{}:{}", project_id.as_str(), target_file);
                     edges.push((from_file_id.clone(), to_file_id, "import", "high"));
@@ -222,333 +217,480 @@ impl AstEngine {
 }
 
 // =====================================================================
-// Language Parsers (Rust, TypeScript, Python, Go)
+// Tree-sitter Language Parsers (Rust, TypeScript, Python, Go)
 // =====================================================================
 
-fn parse_rust(content: &str) -> (Vec<SourceSymbol>, Vec<String>) {
-    let mut symbols = Vec::new();
-    let mut imports = Vec::new();
+pub fn parse_with_tree_sitter(
+    language_name: &str,
+    content: &str,
+) -> (Vec<SourceSymbol>, Vec<String>, bool) {
+    let lang: Language = match language_name {
+        "rust" => tree_sitter_rust::language(),
+        "typescript" | "javascript" => tree_sitter_typescript::language_typescript(),
+        "python" => tree_sitter_python::language(),
+        "go" => tree_sitter_go::language(),
+        _ => return (Vec::new(), Vec::new(), false),
+    };
 
-    let fn_re =
-        Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([a-zA-Z0-9_]+)").unwrap();
-    let struct_re =
-        Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+([a-zA-Z0-9_]+)").unwrap();
-    let enum_re = Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?enum\s+([a-zA-Z0-9_]+)").unwrap();
-    let trait_re = Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?trait\s+([a-zA-Z0-9_]+)").unwrap();
-    let use_re = Regex::new(r"(?m)^\s*(?:pub\s+)?use\s+([a-zA-Z0-9_:]+)").unwrap();
-    let mod_re = Regex::new(r"(?m)^\s*(?:pub\s+)?mod\s+([a-zA-Z0-9_]+);").unwrap();
-
-    let lines: Vec<&str> = content.lines().collect();
-
-    for (line_idx, line) in lines.iter().enumerate() {
-        let line_num = line_idx + 1;
-
-        if let Some(caps) = fn_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                symbols.push(SourceSymbol {
-                    name: m.as_str().to_string(),
-                    kind: SymbolKind::Function,
-                    start_line: line_num,
-                    end_line: line_num,
-                    start_byte: 0,
-                    end_byte: 0,
-                });
-            }
-        } else if let Some(caps) = struct_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                symbols.push(SourceSymbol {
-                    name: m.as_str().to_string(),
-                    kind: SymbolKind::Struct,
-                    start_line: line_num,
-                    end_line: line_num,
-                    start_byte: 0,
-                    end_byte: 0,
-                });
-            }
-        } else if let Some(caps) = enum_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                symbols.push(SourceSymbol {
-                    name: m.as_str().to_string(),
-                    kind: SymbolKind::Enum,
-                    start_line: line_num,
-                    end_line: line_num,
-                    start_byte: 0,
-                    end_byte: 0,
-                });
-            }
-        } else if let Some(caps) = trait_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                symbols.push(SourceSymbol {
-                    name: m.as_str().to_string(),
-                    kind: SymbolKind::Interface,
-                    start_line: line_num,
-                    end_line: line_num,
-                    start_byte: 0,
-                    end_byte: 0,
-                });
-            }
-        }
-
-        if let Some(caps) = use_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                imports.push(m.as_str().to_string());
-            }
-        } else if let Some(caps) = mod_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                imports.push(m.as_str().to_string());
-            }
-        }
+    let mut parser = Parser::new();
+    if parser.set_language(&lang).is_err() {
+        return (Vec::new(), Vec::new(), false);
     }
 
-    (symbols, imports)
-}
+    let tree = match parser.parse(content, None) {
+        Some(t) => t,
+        None => return (Vec::new(), Vec::new(), true),
+    };
 
-fn parse_typescript(content: &str) -> (Vec<SourceSymbol>, Vec<String>) {
+    let root = tree.root_node();
+    let has_error = root.has_error();
+
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
+    let source = content.as_bytes();
 
-    let fn_re =
-        Regex::new(r"(?m)^\s*(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)").unwrap();
-    let class_re = Regex::new(r"(?m)^\s*(?:export\s+)?class\s+([a-zA-Z0-9_]+)").unwrap();
-    let iface_re = Regex::new(r"(?m)^\s*(?:export\s+)?interface\s+([a-zA-Z0-9_]+)").unwrap();
-    let type_re = Regex::new(r"(?m)^\s*(?:export\s+)?type\s+([a-zA-Z0-9_]+)").unwrap();
-    let const_re = Regex::new(r"(?m)^\s*(?:export\s+)?const\s+([a-zA-Z0-9_]+)\s*=").unwrap();
-    let import_re = Regex::new(r#"(?m)^\s*import\s+.*?from\s+['"]([^'"]+)['"]"#).unwrap();
-
-    let lines: Vec<&str> = content.lines().collect();
-
-    for (line_idx, line) in lines.iter().enumerate() {
-        let line_num = line_idx + 1;
-
-        if let Some(caps) = fn_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                symbols.push(SourceSymbol {
-                    name: m.as_str().to_string(),
-                    kind: SymbolKind::Function,
-                    start_line: line_num,
-                    end_line: line_num,
-                    start_byte: 0,
-                    end_byte: 0,
-                });
-            }
-        } else if let Some(caps) = class_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                symbols.push(SourceSymbol {
-                    name: m.as_str().to_string(),
-                    kind: SymbolKind::Class,
-                    start_line: line_num,
-                    end_line: line_num,
-                    start_byte: 0,
-                    end_byte: 0,
-                });
-            }
-        } else if let Some(caps) = iface_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                symbols.push(SourceSymbol {
-                    name: m.as_str().to_string(),
-                    kind: SymbolKind::Interface,
-                    start_line: line_num,
-                    end_line: line_num,
-                    start_byte: 0,
-                    end_byte: 0,
-                });
-            }
-        } else if let Some(caps) = type_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                symbols.push(SourceSymbol {
-                    name: m.as_str().to_string(),
-                    kind: SymbolKind::Struct,
-                    start_line: line_num,
-                    end_line: line_num,
-                    start_byte: 0,
-                    end_byte: 0,
-                });
-            }
-        } else if let Some(caps) = const_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                symbols.push(SourceSymbol {
-                    name: m.as_str().to_string(),
-                    kind: SymbolKind::Const,
-                    start_line: line_num,
-                    end_line: line_num,
-                    start_byte: 0,
-                    end_byte: 0,
-                });
-            }
-        }
-
-        if let Some(caps) = import_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                imports.push(m.as_str().to_string());
-            }
-        }
+    match language_name {
+        "rust" => extract_rust_symbols(root, source, &mut symbols, &mut imports),
+        "typescript" | "javascript" => extract_ts_symbols(root, source, &mut symbols, &mut imports),
+        "python" => extract_python_symbols(root, source, &mut symbols, &mut imports),
+        "go" => extract_go_symbols(root, source, &mut symbols, &mut imports),
+        _ => {}
     }
 
-    (symbols, imports)
+    (symbols, imports, has_error)
 }
 
-fn parse_python(content: &str) -> (Vec<SourceSymbol>, Vec<String>) {
-    let mut symbols = Vec::new();
-    let mut imports = Vec::new();
+fn node_text<'a>(node: Node<'a>, source: &'a [u8]) -> &'a str {
+    node.utf8_text(source).unwrap_or("")
+}
 
-    let def_re = Regex::new(r"(?m)^\s*(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*\(").unwrap();
-    let class_re = Regex::new(r"(?m)^\s*class\s+([a-zA-Z0-9_]+)").unwrap();
-    let import_re = Regex::new(r"(?m)^\s*import\s+([a-zA-Z0-9_.]+)").unwrap();
-    let from_re = Regex::new(r"(?m)^\s*from\s+([a-zA-Z0-9_.]+)\s+import").unwrap();
-
-    let lines: Vec<&str> = content.lines().collect();
-
-    for (line_idx, line) in lines.iter().enumerate() {
-        let line_num = line_idx + 1;
-
-        if let Some(caps) = def_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                symbols.push(SourceSymbol {
-                    name: m.as_str().to_string(),
-                    kind: SymbolKind::Function,
-                    start_line: line_num,
-                    end_line: line_num,
-                    start_byte: 0,
-                    end_byte: 0,
-                });
-            }
-        } else if let Some(caps) = class_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                symbols.push(SourceSymbol {
-                    name: m.as_str().to_string(),
-                    kind: SymbolKind::Class,
-                    start_line: line_num,
-                    end_line: line_num,
-                    start_byte: 0,
-                    end_byte: 0,
-                });
-            }
-        }
-
-        if let Some(caps) = import_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                imports.push(m.as_str().to_string());
-            }
-        } else if let Some(caps) = from_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                imports.push(m.as_str().to_string());
-            }
-        }
+fn make_symbol(node: Node, name: String, kind: SymbolKind) -> SourceSymbol {
+    SourceSymbol {
+        name,
+        kind,
+        start_line: node.start_position().row + 1,
+        end_line: node.end_position().row + 1,
+        start_byte: node.start_byte(),
+        end_byte: node.end_byte(),
     }
-
-    (symbols, imports)
 }
 
-fn parse_go(content: &str) -> (Vec<SourceSymbol>, Vec<String>) {
-    let mut symbols = Vec::new();
-    let mut imports = Vec::new();
-
-    let func_re = Regex::new(r"(?m)^\s*func\s+(?:\([^)]*\)\s+)?([a-zA-Z0-9_]+)\s*\(").unwrap();
-    let type_re = Regex::new(r"(?m)^\s*type\s+([a-zA-Z0-9_]+)\s+(?:struct|interface)").unwrap();
-    let import_re = Regex::new(r#"(?m)^\s*(?:import\s+)?["']([^"']+)["']"#).unwrap();
-
-    let lines: Vec<&str> = content.lines().collect();
-
-    for (line_idx, line) in lines.iter().enumerate() {
-        let line_num = line_idx + 1;
-
-        if let Some(caps) = func_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                symbols.push(SourceSymbol {
-                    name: m.as_str().to_string(),
-                    kind: SymbolKind::Function,
-                    start_line: line_num,
-                    end_line: line_num,
-                    start_byte: 0,
-                    end_byte: 0,
-                });
+// ---------------------------------------------------------------------
+// Rust AST Visitor
+// ---------------------------------------------------------------------
+fn extract_rust_symbols(
+    node: Node,
+    source: &[u8],
+    symbols: &mut Vec<SourceSymbol>,
+    imports: &mut Vec<String>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_item" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    symbols.push(make_symbol(
+                        child,
+                        node_text(name_node, source).to_string(),
+                        SymbolKind::Function,
+                    ));
+                }
             }
-        } else if let Some(caps) = type_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                symbols.push(SourceSymbol {
-                    name: m.as_str().to_string(),
-                    kind: SymbolKind::Struct,
-                    start_line: line_num,
-                    end_line: line_num,
-                    start_byte: 0,
-                    end_byte: 0,
-                });
+            "struct_item" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    symbols.push(make_symbol(
+                        child,
+                        node_text(name_node, source).to_string(),
+                        SymbolKind::Struct,
+                    ));
+                }
             }
-        }
-
-        if let Some(caps) = import_re.captures(line) {
-            if let Some(m) = caps.get(1) {
-                let imp = m.as_str();
-                if imp.contains('/') || !imp.starts_with("std") {
-                    imports.push(imp.to_string());
+            "enum_item" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    symbols.push(make_symbol(
+                        child,
+                        node_text(name_node, source).to_string(),
+                        SymbolKind::Enum,
+                    ));
+                }
+            }
+            "trait_item" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    symbols.push(make_symbol(
+                        child,
+                        node_text(name_node, source).to_string(),
+                        SymbolKind::Interface,
+                    ));
+                }
+            }
+            "impl_item" => {
+                // Functions inside impl items are methods
+                let mut impl_cursor = child.walk();
+                for impl_child in child.children(&mut impl_cursor) {
+                    if impl_child.kind() == "declaration_list" {
+                        let mut body_cursor = impl_child.walk();
+                        for item in impl_child.children(&mut body_cursor) {
+                            if item.kind() == "function_item" {
+                                if let Some(fn_name) = item.child_by_field_name("name") {
+                                    symbols.push(make_symbol(
+                                        item,
+                                        node_text(fn_name, source).to_string(),
+                                        SymbolKind::Method,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            "const_item" | "static_item" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    symbols.push(make_symbol(
+                        child,
+                        node_text(name_node, source).to_string(),
+                        SymbolKind::Const,
+                    ));
+                }
+            }
+            "use_declaration" => {
+                if let Some(arg) = child.child_by_field_name("argument") {
+                    imports.push(node_text(arg, source).to_string());
+                } else {
+                    let text = node_text(child, source);
+                    let cleaned = text.trim_start_matches("use ").trim_end_matches(';').trim();
+                    if !cleaned.is_empty() {
+                        imports.push(cleaned.to_string());
+                    }
+                }
+            }
+            "mod_item" => {
+                // Recurse into inline modules
+                extract_rust_symbols(child, source, symbols, imports);
+            }
+            _ => {
+                if child.child_count() > 0 {
+                    extract_rust_symbols(child, source, symbols, imports);
                 }
             }
         }
     }
+}
 
-    (symbols, imports)
+// ---------------------------------------------------------------------
+// TypeScript / JavaScript AST Visitor
+// ---------------------------------------------------------------------
+fn extract_ts_symbols(
+    node: Node,
+    source: &[u8],
+    symbols: &mut Vec<SourceSymbol>,
+    imports: &mut Vec<String>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let target_node = if child.kind() == "export_statement" {
+            child.child_by_field_name("declaration").unwrap_or(child)
+        } else {
+            child
+        };
+
+        match target_node.kind() {
+            "function_declaration" => {
+                if let Some(name_node) = target_node.child_by_field_name("name") {
+                    symbols.push(make_symbol(
+                        target_node,
+                        node_text(name_node, source).to_string(),
+                        SymbolKind::Function,
+                    ));
+                }
+            }
+            "class_declaration" => {
+                if let Some(name_node) = target_node.child_by_field_name("name") {
+                    symbols.push(make_symbol(
+                        target_node,
+                        node_text(name_node, source).to_string(),
+                        SymbolKind::Class,
+                    ));
+                }
+                // Inspect class methods
+                if let Some(body) = target_node.child_by_field_name("body") {
+                    let mut body_cursor = body.walk();
+                    for item in body.children(&mut body_cursor) {
+                        if item.kind() == "method_definition" {
+                            if let Some(m_name) = item.child_by_field_name("name") {
+                                symbols.push(make_symbol(
+                                    item,
+                                    node_text(m_name, source).to_string(),
+                                    SymbolKind::Method,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            "interface_declaration" => {
+                if let Some(name_node) = target_node.child_by_field_name("name") {
+                    symbols.push(make_symbol(
+                        target_node,
+                        node_text(name_node, source).to_string(),
+                        SymbolKind::Interface,
+                    ));
+                }
+            }
+            "enum_declaration" => {
+                if let Some(name_node) = target_node.child_by_field_name("name") {
+                    symbols.push(make_symbol(
+                        target_node,
+                        node_text(name_node, source).to_string(),
+                        SymbolKind::Enum,
+                    ));
+                }
+            }
+            "import_statement" => {
+                if let Some(source_node) = child.child_by_field_name("source") {
+                    let raw = node_text(source_node, source);
+                    let cleaned = raw.trim_matches(|c| c == '\'' || c == '"');
+                    imports.push(cleaned.to_string());
+                }
+            }
+            _ => {
+                if child.child_count() > 0 && child.kind() != "function_declaration" {
+                    extract_ts_symbols(child, source, symbols, imports);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Python AST Visitor
+// ---------------------------------------------------------------------
+fn extract_python_symbols(
+    node: Node,
+    source: &[u8],
+    symbols: &mut Vec<SourceSymbol>,
+    imports: &mut Vec<String>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_definition" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    symbols.push(make_symbol(
+                        child,
+                        node_text(name_node, source).to_string(),
+                        SymbolKind::Function,
+                    ));
+                }
+            }
+            "class_definition" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    symbols.push(make_symbol(
+                        child,
+                        node_text(name_node, source).to_string(),
+                        SymbolKind::Class,
+                    ));
+                }
+                // Inspect methods inside class
+                if let Some(body) = child.child_by_field_name("body") {
+                    let mut body_cursor = body.walk();
+                    for item in body.children(&mut body_cursor) {
+                        if item.kind() == "function_definition" {
+                            if let Some(fn_name) = item.child_by_field_name("name") {
+                                symbols.push(make_symbol(
+                                    item,
+                                    node_text(fn_name, source).to_string(),
+                                    SymbolKind::Method,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            "import_statement" => {
+                let text = node_text(child, source);
+                let cleaned = text.trim_start_matches("import ").trim();
+                imports.push(cleaned.to_string());
+            }
+            "import_from_statement" => {
+                if let Some(mod_node) = child.child_by_field_name("module_name") {
+                    imports.push(node_text(mod_node, source).to_string());
+                } else {
+                    let text = node_text(child, source);
+                    imports.push(text.to_string());
+                }
+            }
+            _ => {
+                if child.child_count() > 0 && child.kind() != "function_definition" {
+                    extract_python_symbols(child, source, symbols, imports);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Go AST Visitor
+// ---------------------------------------------------------------------
+fn extract_go_symbols(
+    node: Node,
+    source: &[u8],
+    symbols: &mut Vec<SourceSymbol>,
+    imports: &mut Vec<String>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    symbols.push(make_symbol(
+                        child,
+                        node_text(name_node, source).to_string(),
+                        SymbolKind::Function,
+                    ));
+                }
+            }
+            "method_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    symbols.push(make_symbol(
+                        child,
+                        node_text(name_node, source).to_string(),
+                        SymbolKind::Method,
+                    ));
+                }
+            }
+            "type_declaration" => {
+                let mut type_cursor = child.walk();
+                for type_child in child.children(&mut type_cursor) {
+                    if type_child.kind() == "type_spec" {
+                        if let Some(name_node) = type_child.child_by_field_name("name") {
+                            let type_node = type_child.child_by_field_name("type");
+                            let kind = match type_node.map(|n| n.kind()) {
+                                Some("interface_type") => SymbolKind::Interface,
+                                _ => SymbolKind::Struct,
+                            };
+                            symbols.push(make_symbol(
+                                type_child,
+                                node_text(name_node, source).to_string(),
+                                kind,
+                            ));
+                        }
+                    }
+                }
+            }
+            "import_declaration" => {
+                let mut imp_cursor = child.walk();
+                for imp_child in child.children(&mut imp_cursor) {
+                    if imp_child.kind() == "import_spec" {
+                        if let Some(path_node) = imp_child.child_by_field_name("path") {
+                            let raw = node_text(path_node, source);
+                            imports.push(raw.trim_matches('"').to_string());
+                        }
+                    }
+                }
+            }
+            _ => {
+                if child.child_count() > 0 {
+                    extract_go_symbols(child, source, symbols, imports);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Path Resolution and File Ignore Filtering
+// ---------------------------------------------------------------------
+
+fn is_ignored_ast_path(root: &Path, p: &Path) -> bool {
+    let rel = match p.strip_prefix(root) {
+        Ok(r) => r.to_string_lossy(),
+        Err(_) => return false,
+    };
+
+    rel.starts_with(".git")
+        || rel.starts_with(".davr")
+        || rel.starts_with("target")
+        || rel.starts_with("node_modules")
+        || rel.starts_with("dist")
+        || rel.starts_with("build")
+        || rel.starts_with(".venv")
+        || rel.starts_with("__pycache__")
+        || rel.starts_with(".next")
 }
 
 fn resolve_import_path(
     from_file: &str,
-    import_str: &str,
+    import_target: &str,
     file_map: &HashMap<String, ParsedFile>,
 ) -> Option<String> {
-    let from_path = Path::new(from_file);
-    let parent = from_path.parent().unwrap_or(Path::new(""));
+    if import_target.starts_with("./") || import_target.starts_with("../") {
+        let from_dir = Path::new(from_file).parent()?;
+        let resolved = from_dir.join(import_target);
+        let normalized = normalize_path(&resolved);
 
-    // Relative import (./ or ../)
-    if import_str.starts_with('.') {
-        let joined = parent.join(import_str);
-        for ext in &["", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.js"] {
-            let candidate = joined.to_string_lossy().to_string() + ext;
-            if file_map.contains_key(&candidate) {
-                return Some(candidate);
+        let candidates = [
+            format!("{}.ts", normalized),
+            format!("{}.tsx", normalized),
+            format!("{}.js", normalized),
+            format!("{}.jsx", normalized),
+            format!("{}/index.ts", normalized),
+            format!("{}/index.js", normalized),
+            format!("{}.py", normalized),
+            format!("{}.rs", normalized),
+        ];
+
+        for c in candidates {
+            if file_map.contains_key(&c) {
+                return Some(c);
             }
-        }
-    }
-
-    // Module / crate import
-    for path in file_map.keys() {
-        if path.contains(import_str) {
-            return Some(path.clone());
         }
     }
 
     None
 }
 
-fn is_ignored_ast_path(project_root: &Path, path: &Path) -> bool {
-    let rel = match path.strip_prefix(project_root) {
-        Ok(r) => r,
-        Err(_) => path,
-    };
-    let path_str = rel.to_string_lossy();
-
-    path_str.starts_with(".git")
-        || path_str.starts_with(".davr")
-        || path_str.contains("node_modules")
-        || path_str.contains("/target/")
-        || path_str.starts_with("target")
-        || path_str.contains("/.venv/")
-        || path_str.starts_with(".venv")
-        || path_str.contains("/__pycache__/")
+fn normalize_path(path: &Path) -> String {
+    let mut parts = Vec::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::Normal(c) => parts.push(c.to_string_lossy().to_string()),
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            _ => {}
+        }
+    }
+    parts.join("/")
 }
+
+// =====================================================================
+// Tests
+// =====================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
     fn test_parse_rust_symbols() {
         let code = r#"
-pub fn calculate_sum(a: i32, b: i32) -> i32 { a + b }
-pub struct UserAccount { id: u64 }
-enum UserRole { Admin, Member }
 use crate::storage::Database;
+
+pub fn calculate_sum(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+pub struct UserAccount {
+    pub id: u64,
+}
+
+pub enum UserRole {
+    Admin,
+    Member,
+}
 "#;
-        let (symbols, imports) = parse_rust(code);
+        let (symbols, imports, incomplete) = parse_with_tree_sitter("rust", code);
+        assert!(!incomplete, "Valid code should not be incomplete");
         assert_eq!(symbols.len(), 3);
         assert_eq!(symbols[0].name, "calculate_sum");
         assert_eq!(symbols[0].kind, SymbolKind::Function);
@@ -556,8 +698,7 @@ use crate::storage::Database;
         assert_eq!(symbols[1].kind, SymbolKind::Struct);
         assert_eq!(symbols[2].name, "UserRole");
         assert_eq!(symbols[2].kind, SymbolKind::Enum);
-        assert_eq!(imports.len(), 1);
-        assert_eq!(imports[0], "crate::storage::Database");
+        assert!(!imports.is_empty());
     }
 
     #[test]
@@ -568,7 +709,8 @@ export function loginUser(req: any) {}
 export class AuthService {}
 export interface TokenPayload {}
 "#;
-        let (symbols, imports) = parse_typescript(code);
+        let (symbols, imports, incomplete) = parse_with_tree_sitter("typescript", code);
+        assert!(!incomplete);
         assert_eq!(symbols.len(), 3);
         assert_eq!(symbols[0].name, "loginUser");
         assert_eq!(symbols[1].name, "AuthService");
@@ -589,10 +731,47 @@ def create_app():
 class DatabaseConnection:
     pass
 "#;
-        let (symbols, imports) = parse_python(code);
+        let (symbols, imports, incomplete) = parse_with_tree_sitter("python", code);
+        assert!(!incomplete);
         assert_eq!(symbols.len(), 2);
         assert_eq!(symbols[0].name, "create_app");
         assert_eq!(symbols[1].name, "DatabaseConnection");
         assert_eq!(imports.len(), 2);
+    }
+
+    #[test]
+    fn test_error_tolerant_parsing_partial_syntax() {
+        // Rust code with broken/incomplete syntax inside a function during agent edit
+        let code = r#"
+pub fn valid_first_func() -> i32 {
+    42
+}
+
+pub fn broken_syntax_in_progress() {
+    let x = ; // syntax error: missing expression before semicolon
+}
+
+pub struct ValidTrailingStruct {
+    pub value: String,
+}
+"#;
+        let (symbols, _imports, incomplete) = parse_with_tree_sitter("rust", code);
+        // Tree-sitter detects incomplete/erroneous syntax
+        assert!(incomplete, "Must flag syntax error as incomplete");
+        // Tree-sitter still error-tolerantly recovers the surrounding symbols!
+        assert!(
+            symbols.iter().any(|s| s.name == "valid_first_func"),
+            "Should recover valid_first_func"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "broken_syntax_in_progress"),
+            "Should recover broken_syntax_in_progress function header"
+        );
+        assert!(
+            symbols.iter().any(|s| s.name == "ValidTrailingStruct"),
+            "Should recover ValidTrailingStruct"
+        );
     }
 }

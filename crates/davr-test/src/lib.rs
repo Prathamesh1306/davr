@@ -295,9 +295,7 @@ impl TestFrameworkAdapter for JestAdapter {
             let line = line.trim();
             if line.starts_with("✓ ") || line.starts_with("√ ") || line.starts_with("PASS ") {
                 passed += 1;
-                let test_name = line
-                    .trim_start_matches(|c| c == '✓' || c == '√' || c == ' ')
-                    .to_string();
+                let test_name = line.trim_start_matches(['✓', '√', ' ']).to_string();
                 test_cases.push(TestCaseResult {
                     name: test_name,
                     status: TestCaseStatus::Passed,
@@ -307,9 +305,7 @@ impl TestFrameworkAdapter for JestAdapter {
             } else if line.starts_with("✕ ") || line.starts_with("× ") || line.starts_with("FAIL ")
             {
                 failed += 1;
-                let test_name = line
-                    .trim_start_matches(|c| c == '✕' || c == '×' || c == ' ')
-                    .to_string();
+                let test_name = line.trim_start_matches(['✕', '×', ' ']).to_string();
                 test_cases.push(TestCaseResult {
                     name: test_name,
                     status: TestCaseStatus::Failed,
@@ -318,9 +314,7 @@ impl TestFrameworkAdapter for JestAdapter {
                 });
             } else if line.starts_with("○ ") || line.starts_with("SKIP ") {
                 skipped += 1;
-                let test_name = line
-                    .trim_start_matches(|c| c == '○' || c == ' ')
-                    .to_string();
+                let test_name = line.trim_start_matches(['○', ' ']).to_string();
                 test_cases.push(TestCaseResult {
                     name: test_name,
                     status: TestCaseStatus::Skipped,

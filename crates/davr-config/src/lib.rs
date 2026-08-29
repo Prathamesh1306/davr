@@ -288,26 +288,212 @@ impl Config {
         Ok(config)
     }
 
-    /// Overrides configuration via DAVR_* environment variables (using __ for nesting)
+    /// Overrides configuration via DAVR_* environment variables (using __ for nesting, e.g. DAVR_AGENT__TIMEOUT_SECONDS=120)
     pub fn apply_env_overrides(&mut self) {
-        if let Ok(val) = env::var("DAVR_AGENT__TIMEOUT_SECONDS") {
-            if let Ok(parsed) = val.parse::<u64>() {
-                self.agent.timeout_seconds = parsed;
+        for (key, val) in env::vars() {
+            if let Some(stripped) = key.strip_prefix("DAVR_") {
+                let dotted = stripped.replace("__", ".").to_lowercase();
+                let _ = self.apply_single_override(&dotted, &val);
             }
         }
-        if let Ok(val) = env::var("DAVR_TELEMETRY__ENABLED") {
-            if let Ok(parsed) = val.parse::<bool>() {
-                self.telemetry.enabled = parsed;
+    }
+
+    fn apply_single_override(&mut self, dotted: &str, raw_val: &str) -> Result<()> {
+        match dotted {
+            "agent.timeout_seconds" => {
+                if let Ok(p) = raw_val.parse::<u64>() {
+                    self.agent.timeout_seconds = p;
+                }
             }
-        }
-        if let Ok(val) = env::var("DAVR_TEST__IMPACT_MIN_CONFIDENCE") {
-            match val.to_lowercase().as_str() {
+            "agent.default_agent" => {
+                self.agent.default_agent = raw_val.to_string();
+            }
+            "agent.sanitize_env" => {
+                if let Ok(b) = raw_val.parse::<bool>() {
+                    self.agent.sanitize_env = b;
+                }
+            }
+            "telemetry.enabled" => {
+                if let Ok(b) = raw_val.parse::<bool>() {
+                    self.telemetry.enabled = b;
+                }
+            }
+            "telemetry.retention_days" => {
+                if let Ok(p) = raw_val.parse::<u32>() {
+                    self.telemetry.retention_days = p;
+                }
+            }
+            "telemetry.verification_retention_days" => {
+                if let Ok(p) = raw_val.parse::<u32>() {
+                    self.telemetry.verification_retention_days = p;
+                }
+            }
+            "git.snapshot_on_run" => {
+                if let Ok(b) = raw_val.parse::<bool>() {
+                    self.git.snapshot_on_run = b;
+                }
+            }
+            "git.max_snapshots_per_project" => {
+                if let Ok(p) = raw_val.parse::<usize>() {
+                    self.git.max_snapshots_per_project = p;
+                }
+            }
+            "git.snapshot_retention_days" => {
+                if let Ok(p) = raw_val.parse::<u32>() {
+                    self.git.snapshot_retention_days = p;
+                }
+            }
+            "environment.docker_required" => {
+                if let Ok(b) = raw_val.parse::<bool>() {
+                    self.environment.docker_required = b;
+                }
+            }
+            "environment.warnings_block_run" => {
+                if let Ok(b) = raw_val.parse::<bool>() {
+                    self.environment.warnings_block_run = b;
+                }
+            }
+            "test.impact_min_confidence" => match raw_val.to_lowercase().as_str() {
                 "high" => self.test.impact_min_confidence = Confidence::High,
                 "medium" => self.test.impact_min_confidence = Confidence::Medium,
                 "low" => self.test.impact_min_confidence = Confidence::Low,
                 _ => {}
+            },
+            "test.fallback_to_full_suite" => {
+                if let Ok(b) = raw_val.parse::<bool>() {
+                    self.test.fallback_to_full_suite = b;
+                }
+            }
+            "test.parallelism" => {
+                if let Ok(p) = raw_val.parse::<usize>() {
+                    self.test.parallelism = p;
+                }
+            }
+            "flaky.iterations" => {
+                if let Ok(p) = raw_val.parse::<u32>() {
+                    self.flaky.iterations = p;
+                }
+            }
+            "flaky.timeout_seconds" => {
+                if let Ok(p) = raw_val.parse::<u64>() {
+                    self.flaky.timeout_seconds = p;
+                }
+            }
+            "ci.fail_on_flaky" => {
+                if let Ok(b) = raw_val.parse::<bool>() {
+                    self.ci.fail_on_flaky = b;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Retrieves the serialized string value for a dotted configuration key (e.g. "agent.default_agent")
+    pub fn get_value(&self, dotted_key: &str) -> Result<String> {
+        let toml_str = self.to_toml_string()?;
+        let value: toml::Value =
+            toml::from_str(&toml_str).map_err(|e| DavrError::Config(e.to_string()))?;
+
+        let mut current = &value;
+        for part in dotted_key.split('.') {
+            match current.get(part) {
+                Some(next) => current = next,
+                None => {
+                    return Err(DavrError::Config(format!(
+                        "Key not found in configuration: {}",
+                        dotted_key
+                    )))
+                }
             }
         }
+
+        match current {
+            toml::Value::String(s) => Ok(s.clone()),
+            _ => Ok(current.to_string()),
+        }
+    }
+
+    /// Sets the value for a dotted configuration key, re-validates, and saves to the project config file
+    pub fn set_value(
+        &mut self,
+        project_root: impl AsRef<Path>,
+        dotted_key: &str,
+        raw_value: &str,
+    ) -> Result<()> {
+        let toml_str = self.to_toml_string()?;
+        let mut value: toml::Value =
+            toml::from_str(&toml_str).map_err(|e| DavrError::Config(e.to_string()))?;
+
+        let parts: Vec<&str> = dotted_key.split('.').collect();
+        if parts.is_empty() {
+            return Err(DavrError::Config("Empty configuration key".into()));
+        }
+
+        let parsed_val: toml::Value = if raw_value == "true" {
+            toml::Value::Boolean(true)
+        } else if raw_value == "false" {
+            toml::Value::Boolean(false)
+        } else if let Ok(i) = raw_value.parse::<i64>() {
+            toml::Value::Integer(i)
+        } else if let Ok(f) = raw_value.parse::<f64>() {
+            toml::Value::Float(f)
+        } else if raw_value.starts_with('[') && raw_value.ends_with(']') {
+            toml::from_str(raw_value).unwrap_or_else(|_| toml::Value::String(raw_value.into()))
+        } else {
+            toml::Value::String(raw_value.into())
+        };
+
+        // Navigate to the parent table
+        let mut current = &mut value;
+        for &part in &parts[..parts.len() - 1] {
+            match current {
+                toml::Value::Table(ref mut map) => {
+                    current = map
+                        .entry(part.to_string())
+                        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+                }
+                _ => {
+                    return Err(DavrError::Config(format!(
+                        "Invalid path for key: {}",
+                        dotted_key
+                    )))
+                }
+            }
+        }
+
+        // Set the leaf value
+        let leaf = parts[parts.len() - 1];
+        if let toml::Value::Table(ref mut map) = current {
+            map.insert(leaf.to_string(), parsed_val);
+        } else {
+            return Err(DavrError::Config(format!(
+                "Invalid path for key: {}",
+                dotted_key
+            )));
+        }
+
+        // Serialize and re-parse into Config to ensure schema validity
+        let updated_toml = toml::to_string_pretty(&value)
+            .map_err(|e| DavrError::Config(format!("Failed to serialize TOML: {}", e)))?;
+        let new_config: Config = toml::from_str(&updated_toml).map_err(|e| {
+            DavrError::Config(format!(
+                "Invalid configuration value for '{}': {}",
+                dotted_key, e
+            ))
+        })?;
+
+        new_config.validate()?;
+        *self = new_config;
+
+        // Write to .davr/config.toml
+        let config_file = project_root.as_ref().join(".davr").join("config.toml");
+        if config_file.exists() {
+            fs::write(&config_file, self.to_toml_string()?)
+                .map_err(|e| DavrError::Config(format!("Failed to write config file: {}", e)))?;
+        }
+
+        Ok(())
     }
 
     /// Validates security patterns and configuration invariants

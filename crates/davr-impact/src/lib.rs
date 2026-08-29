@@ -75,21 +75,19 @@ impl ImpactAnalyzer {
             })
             .map_err(|e| DavrError::Database(e.to_string()))?;
 
-        for r in rows {
-            if let Ok((from_id, to_id, conf)) = r {
-                let from_path = from_id
-                    .strip_prefix(&format!("{}:", project_id.as_str()))
-                    .unwrap_or(&from_id)
-                    .to_string();
-                let to_path = to_id
-                    .strip_prefix(&format!("{}:", project_id.as_str()))
-                    .unwrap_or(&to_id)
-                    .to_string();
-                reverse_graph
-                    .entry(to_path)
-                    .or_default()
-                    .push((from_path, conf));
-            }
+        for (from_id, to_id, conf) in rows.flatten() {
+            let from_path = from_id
+                .strip_prefix(&format!("{}:", project_id.as_str()))
+                .unwrap_or(&from_id)
+                .to_string();
+            let to_path = to_id
+                .strip_prefix(&format!("{}:", project_id.as_str()))
+                .unwrap_or(&to_id)
+                .to_string();
+            reverse_graph
+                .entry(to_path)
+                .or_default()
+                .push((from_path, conf));
         }
 
         // 2. Perform BFS from directly modified files up to max_depth
@@ -156,26 +154,24 @@ impl ImpactAnalyzer {
             })
             .map_err(|e| DavrError::Database(e.to_string()))?;
 
-        for r in test_rows {
-            if let Ok(test_path) = r {
-                for affected in &all_affected_files {
-                    let base_name = affected
-                        .split('/')
-                        .last()
-                        .unwrap_or(affected)
-                        .split('.')
-                        .next()
-                        .unwrap_or("");
+        for test_path in test_rows.flatten() {
+            for affected in &all_affected_files {
+                let base_name = affected
+                    .split('/')
+                    .next_back()
+                    .unwrap_or(affected)
+                    .split('.')
+                    .next()
+                    .unwrap_or("");
 
-                    if test_path.contains(base_name) || test_path == *affected {
-                        impacted_tests.push(ImpactedTest {
-                            test_file: test_path.clone(),
-                            test_name: None,
-                            confidence: Confidence::High,
-                            triggered_by_file: affected.clone(),
-                        });
-                        break;
-                    }
+                if test_path.contains(base_name) || test_path == *affected {
+                    impacted_tests.push(ImpactedTest {
+                        test_file: test_path.clone(),
+                        test_name: None,
+                        confidence: Confidence::High,
+                        triggered_by_file: affected.clone(),
+                    });
+                    break;
                 }
             }
         }
@@ -199,7 +195,6 @@ impl ImpactAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use davr_types::ProjectId;
 
     #[test]
     fn test_impact_analyzer_bfs() {
