@@ -10,6 +10,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
+#[cfg(windows)]
+#[link(name = "advapi32")]
+#[link(name = "crypt32")]
+#[link(name = "rpcrt4")]
+#[link(name = "user32")]
+extern "C" {}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub id: SnapshotId,
