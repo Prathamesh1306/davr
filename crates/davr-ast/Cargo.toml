@@ -18,6 +18,11 @@ uuid = { workspace = true }
 walkdir = "2.5"
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tree-sitter = "0.22"
+tree-sitter-rust = "0.21"
+tree-sitter-python = "0.21"
+tree-sitter-typescript = "0.21"
+tree-sitter-go = "0.21"
 
 [dev-dependencies]
 tempfile = "3.10"

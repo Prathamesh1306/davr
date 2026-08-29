@@ -17,6 +17,7 @@ members = [
     "crates/davr-mcp",
     "crates/davr-core",
     "crates/davr-cli",
+    "xtask",
 ]
 
 [workspace.package]

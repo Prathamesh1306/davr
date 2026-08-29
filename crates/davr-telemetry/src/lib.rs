@@ -97,7 +97,7 @@ impl TelemetryEmitter {
             return;
         }
 
-        let events: Vec<QueuedEvent> = queue.drain(..).collect();
+        let events: Vec<QueuedEvent> = std::mem::take(queue);
         let db = self.db.lock().unwrap();
 
         for event in events {

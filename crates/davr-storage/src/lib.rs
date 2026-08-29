@@ -317,15 +317,13 @@ impl Database {
             })
             .map_err(|e| DavrError::Database(e.to_string()))?;
 
-        for r in rows {
-            if let Ok((path, event_type, hash)) = r {
-                let state = if event_type == "deleted" || hash.is_none() {
-                    FileState::Missing
-                } else {
-                    FileState::Present(hash.unwrap())
-                };
-                map.insert(path, state);
-            }
+        for (path, event_type, hash) in rows.flatten() {
+            let state = if event_type == "deleted" || hash.is_none() {
+                FileState::Missing
+            } else {
+                FileState::Present(hash.unwrap())
+            };
+            map.insert(path, state);
         }
         Ok(map)
     }
@@ -391,17 +389,257 @@ impl Database {
             .map_err(|e| DavrError::Database(e.to_string()))?;
 
         let mut list = Vec::new();
-        for r in rows {
-            if let Ok(rec) = r {
-                list.push(rec);
+        for rec in rows.flatten() {
+            list.push(rec);
+        }
+        Ok(list)
+    }
+
+    /// Performs an online backup of the SQLite database to the specified path using VACUUM INTO
+    pub fn backup(&self, dest_path: impl AsRef<Path>) -> Result<()> {
+        let dest = dest_path.as_ref();
+        if dest.exists() {
+            let _ = std::fs::remove_file(dest);
+        }
+        let dest_str = dest.to_string_lossy().to_string();
+        self.conn
+            .execute("VACUUM INTO ?1", params![&dest_str])
+            .map_err(|e| DavrError::Database(format!("Backup failed: {}", e)))?;
+        Ok(())
+    }
+
+    /// Verifies database integrity via PRAGMA integrity_check and foreign_key_check
+    pub fn verify_integrity(&self) -> Result<Vec<String>> {
+        let mut issues = Vec::new();
+        let mut stmt = self
+            .conn
+            .prepare("PRAGMA integrity_check")
+            .map_err(|e| DavrError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| DavrError::Database(e.to_string()))?;
+
+        for res in rows.flatten() {
+            if res != "ok" {
+                issues.push(format!("Integrity check issue: {}", res));
             }
         }
+
+        let mut fk_stmt = self
+            .conn
+            .prepare("PRAGMA foreign_key_check")
+            .map_err(|e| DavrError::Database(e.to_string()))?;
+        let fk_rows = fk_stmt
+            .query_map([], |row| {
+                let table: String = row.get(0)?;
+                let rowid: i64 = row.get(1)?;
+                let parent: String = row.get(2)?;
+                Ok(format!(
+                    "Foreign key mismatch in table '{}' row {} referencing '{}'",
+                    table, rowid, parent
+                ))
+            })
+            .map_err(|e| DavrError::Database(e.to_string()))?;
+
+        for msg in fk_rows.flatten() {
+            issues.push(msg);
+        }
+
+        Ok(issues)
+    }
+
+    /// Returns row counts across tables and disk usage
+    pub fn get_stats(&self, db_file_path: Option<&Path>) -> Result<DatabaseStats> {
+        let mut table_counts = std::collections::HashMap::new();
+        let tables = [
+            "projects",
+            "agent_sessions",
+            "git_snapshots",
+            "file_versions",
+            "filesystem_events",
+            "telemetry_events",
+            "commands",
+            "test_runs",
+            "test_results",
+            "flaky_test_runs",
+            "source_files",
+            "source_symbols",
+            "dependency_edges",
+            "rollback_operations",
+            "verification_runs",
+        ];
+
+        for table in tables {
+            let query = format!("SELECT count(*) FROM {}", table);
+            let count: usize = self
+                .conn
+                .query_row(&query, [], |row| row.get(0))
+                .unwrap_or(0);
+            table_counts.insert(table.to_string(), count);
+        }
+
+        let file_size_bytes = if let Some(p) = db_file_path {
+            std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)
+        } else {
+            0
+        };
+
+        Ok(DatabaseStats {
+            file_size_bytes,
+            table_counts,
+        })
+    }
+
+    /// Prunes telemetry events, verification runs, and sessions older than retention thresholds
+    pub fn prune_records(
+        &self,
+        telemetry_retention_days: u32,
+        verification_retention_days: u32,
+        include_all: bool,
+    ) -> Result<CleanReport> {
+        let now = Utc::now().timestamp_millis();
+        let tel_cutoff = now - (telemetry_retention_days as i64 * 86_400_000);
+        let ver_cutoff = now - (verification_retention_days as i64 * 86_400_000);
+
+        let tel_pruned = self
+            .conn
+            .execute(
+                "DELETE FROM telemetry_events WHERE occurred_at < ?1",
+                params![tel_cutoff],
+            )
+            .map_err(|e| DavrError::Database(e.to_string()))?;
+
+        let ver_pruned = self
+            .conn
+            .execute(
+                "DELETE FROM verification_runs WHERE started_at < ?1",
+                params![ver_cutoff],
+            )
+            .map_err(|e| DavrError::Database(e.to_string()))?;
+
+        let sess_pruned = if include_all {
+            self.conn
+                .execute(
+                    "DELETE FROM agent_sessions WHERE finished_at IS NOT NULL AND finished_at < ?1",
+                    params![tel_cutoff],
+                )
+                .map_err(|e| DavrError::Database(e.to_string()))?
+        } else {
+            0
+        };
+
+        // Run incremental vacuum / optimize
+        let _ = self.conn.execute_batch("PRAGMA optimize;");
+
+        Ok(CleanReport {
+            telemetry_events_pruned: tel_pruned,
+            verification_runs_pruned: ver_pruned,
+            sessions_pruned: sess_pruned,
+            snapshots_pruned: 0,
+        })
+    }
+
+    /// Exports telemetry events formatted as JSON values
+    pub fn export_telemetry(
+        &self,
+        session_id: Option<&str>,
+        since_ms: Option<i64>,
+    ) -> Result<Vec<serde_json::Value>> {
+        let query = match (session_id, since_ms) {
+            (Some(_), Some(_)) => {
+                "SELECT id, project_id, session_id, kind, severity, ref_table, ref_id, payload, occurred_at
+                 FROM telemetry_events
+                 WHERE session_id = ?1 AND occurred_at >= ?2
+                 ORDER BY occurred_at ASC"
+            }
+            (Some(_), None) => {
+                "SELECT id, project_id, session_id, kind, severity, ref_table, ref_id, payload, occurred_at
+                 FROM telemetry_events
+                 WHERE session_id = ?1
+                 ORDER BY occurred_at ASC"
+            }
+            (None, Some(_)) => {
+                "SELECT id, project_id, session_id, kind, severity, ref_table, ref_id, payload, occurred_at
+                 FROM telemetry_events
+                 WHERE occurred_at >= ?1
+                 ORDER BY occurred_at ASC"
+            }
+            (None, None) => {
+                "SELECT id, project_id, session_id, kind, severity, ref_table, ref_id, payload, occurred_at
+                 FROM telemetry_events
+                 ORDER BY occurred_at ASC"
+            }
+        };
+
+        let mut stmt = self
+            .conn
+            .prepare(query)
+            .map_err(|e| DavrError::Database(e.to_string()))?;
+
+        let rows = if let (Some(sid), Some(s)) = (session_id, since_ms) {
+            stmt.query(params![sid, s])
+        } else if let Some(sid) = session_id {
+            stmt.query(params![sid])
+        } else if let Some(s) = since_ms {
+            stmt.query(params![s])
+        } else {
+            stmt.query([])
+        }
+        .map_err(|e| DavrError::Database(e.to_string()))?;
+
+        let mut list = Vec::new();
+        let mut rows = rows;
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| DavrError::Database(e.to_string()))?
+        {
+            let id: i64 = row.get(0).unwrap_or(0);
+            let proj: String = row.get(1).unwrap_or_default();
+            let sess: Option<String> = row.get(2).unwrap_or(None);
+            let kind: String = row.get(3).unwrap_or_default();
+            let sev: String = row.get(4).unwrap_or_default();
+            let ref_t: Option<String> = row.get(5).unwrap_or(None);
+            let ref_i: Option<String> = row.get(6).unwrap_or(None);
+            let payload_raw: Option<String> = row.get(7).unwrap_or(None);
+            let occurred_at: i64 = row.get(8).unwrap_or(0);
+
+            let payload: Option<serde_json::Value> = payload_raw
+                .as_deref()
+                .and_then(|p| serde_json::from_str(p).ok());
+
+            list.push(serde_json::json!({
+                "id": id,
+                "project_id": proj,
+                "session_id": sess,
+                "kind": kind,
+                "severity": sev,
+                "ref_table": ref_t,
+                "ref_id": ref_i,
+                "payload": payload,
+                "occurred_at": occurred_at
+            }));
+        }
+
         Ok(list)
     }
 
     pub fn inner(&self) -> &Connection {
         &self.conn
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DatabaseStats {
+    pub file_size_bytes: u64,
+    pub table_counts: std::collections::HashMap<String, usize>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CleanReport {
+    pub telemetry_events_pruned: usize,
+    pub verification_runs_pruned: usize,
+    pub sessions_pruned: usize,
+    pub snapshots_pruned: usize,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

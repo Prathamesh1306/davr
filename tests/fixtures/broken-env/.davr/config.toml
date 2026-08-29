@@ -1,0 +1,53 @@
+[project]
+name = "broken-env-fixture"
+languages = ["rust"]
+
+[environment]
+docker_required = true
+required_credentials = []
+required_env_vars = ["NONEXISTENT_REQUIRED_SECRET_VAR_XYZ_999"]
+warnings_block_run = false
+
+[[environment.required_tools]]
+name = "nonexistent_compiler_binary_xyz_12345"
+
+[agent]
+allowed_agents = ["claude", "aider", "opencode"]
+default_agent = "claude"
+env_allowlist = ["PATH", "HOME", "LANG", "ANTHROPIC_API_KEY"]
+sanitize_env = true
+timeout_seconds = 0
+
+[security]
+blocked_commands = ["regex:^rm\\s+-rf\\s+/(\\s|$)", "glob:git push --force*"]
+confirm_commands = ["glob:git push*", "glob:*DROP TABLE*"]
+redact_patterns = ["regex:sk-[A-Za-z0-9]{20,}", "regex:ghp_[A-Za-z0-9]{36}"]
+
+[git]
+max_snapshots_per_project = 20
+snapshot_on_run = true
+snapshot_retention_days = 14
+
+[telemetry]
+enabled = true
+retention_days = 30
+verification_retention_days = 90
+
+[test]
+fallback_to_full_suite = true
+frameworks = ["cargo_test", "pytest", "jest", "go_test"]
+impact_min_confidence = "medium"
+parallelism = 0
+
+[flaky]
+iterations = 10
+max_parallel_iterations = 4
+timeout_seconds = 30
+
+[mcp]
+allow_mutating_tools = false
+enabled = false
+
+[ci]
+fail_on_flaky = false
+post_pr_comment = true
