@@ -73,7 +73,7 @@ enum Commands {
     Test(TestArgs),
 
     #[command(about = "Index and parse source AST symbols and dependency graph")]
-    Analyze,
+    Analyze(AnalyzeArgs),
 
     #[command(about = "Perform transitive change impact analysis")]
     Impact(ImpactArgs),
@@ -101,6 +101,12 @@ enum Commands {
 }
 
 #[derive(Args, Debug)]
+struct AnalyzeArgs {
+    #[arg(long, help = "Base branch or git ref to compare AST against")]
+    base: Option<String>,
+}
+
+#[derive(Args, Debug)]
 struct FlakyArgs {
     #[arg(long, help = "Override framework (cargo_test, pytest, jest, go_test)")]
     framework: Option<String>,
@@ -114,12 +120,21 @@ struct FlakyArgs {
         help = "Number of repeat iterations (default from config: 5-10)"
     )]
     iterations: Option<usize>,
+
+    #[arg(
+        long,
+        help = "Only run flakiness stress tests on test files modified in the working tree"
+    )]
+    changed_only: bool,
 }
 
 #[derive(Args, Debug)]
 struct ImpactArgs {
     #[arg(long, help = "Base snapshot tree hash to diff against")]
     snapshot: Option<String>,
+
+    #[arg(long, help = "Base branch or git ref to diff against (e.g. main)")]
+    base: Option<String>,
 
     #[arg(
         short,
@@ -137,6 +152,20 @@ struct TestArgs {
 
     #[arg(short, long, help = "Filter pattern for test names")]
     filter: Option<String>,
+
+    #[arg(
+        long,
+        conflicts_with = "full",
+        help = "Run only tests impacted by AST changes"
+    )]
+    selected: bool,
+
+    #[arg(
+        long,
+        conflicts_with = "selected",
+        help = "Force running the entire test suite"
+    )]
+    full: bool,
 }
 
 #[derive(Args, Debug)]
@@ -543,6 +572,12 @@ async fn execute_command(
                 for f in summary.files_changed {
                     println!("    - {}", f);
                 }
+                if !summary.loop_notices.is_empty() {
+                    println!("\n  {}", "⚠️  Loop Detection Notices:".yellow().bold());
+                    for n in &summary.loop_notices {
+                        println!("    • [{}] {}", n.heuristic.as_str().bold(), n.details);
+                    }
+                }
             }
 
             Ok(summary.exit_code)
@@ -820,7 +855,12 @@ async fn execute_command(
 
         Commands::Test(args) => {
             let results = engine
-                .run_tests(args.framework.as_deref(), args.filter.as_deref())
+                .run_tests(
+                    args.framework.as_deref(),
+                    args.filter.as_deref(),
+                    args.selected,
+                    args.full,
+                )
                 .await?;
 
             let all_passed = results.iter().all(|r| r.failed == 0 && r.exit_code == 0);
@@ -875,13 +915,16 @@ async fn execute_command(
             }
         }
 
-        Commands::Analyze => {
-            let summary = engine.analyze_project()?;
+        Commands::Analyze(args) => {
+            let summary = engine.analyze_project(args.base.as_deref())?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&summary).unwrap());
             } else if !quiet {
                 println!("\n{}", "DAVR AST Codebase Analysis".bold().underline());
                 println!("  Target Project:     {}", engine.project_root().display());
+                if let Some(ref b) = args.base {
+                    println!("  Base Git Ref:       {}", b.yellow());
+                }
                 println!(
                     "  Source Files:       {}",
                     summary.files_indexed.to_string().bold()
@@ -903,7 +946,11 @@ async fn execute_command(
         }
 
         Commands::Impact(args) => {
-            let report = engine.analyze_impact(args.snapshot.as_deref(), args.depth)?;
+            let report = engine.analyze_impact(
+                args.snapshot.as_deref(),
+                args.base.as_deref(),
+                args.depth,
+            )?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report).unwrap());
             } else if !quiet {
@@ -911,6 +958,9 @@ async fn execute_command(
                     "\n{}",
                     "DAVR Transitive Change Impact Analysis".bold().underline()
                 );
+                if let Some(ref b) = args.base {
+                    println!("  Base Git Ref:            {}", b.yellow());
+                }
                 println!(
                     "  Directly Changed Files:  {}",
                     report.directly_modified_files.len()
@@ -951,6 +1001,7 @@ async fn execute_command(
                     args.framework.as_deref(),
                     args.filter.as_deref(),
                     args.iterations,
+                    args.changed_only,
                 )
                 .await?;
 

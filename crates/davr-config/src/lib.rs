@@ -17,6 +17,8 @@ pub struct Config {
     pub flaky: FlakyConfig,
     pub mcp: McpConfig,
     pub ci: CiConfig,
+    #[serde(default)]
+    pub loop_detection: LoopDetectionConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -196,6 +198,45 @@ pub struct CiConfig {
     pub post_pr_comment: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoopDetectionConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_repeated_command_threshold")]
+    pub repeated_command_threshold: usize,
+    #[serde(default = "default_window_iterations")]
+    pub window_iterations: usize,
+    #[serde(default = "default_repeated_failure_threshold")]
+    pub repeated_failure_threshold: usize,
+    #[serde(default = "default_excessive_retries_threshold")]
+    pub excessive_retries_threshold: usize,
+}
+
+fn default_repeated_command_threshold() -> usize {
+    3
+}
+fn default_window_iterations() -> usize {
+    5
+}
+fn default_repeated_failure_threshold() -> usize {
+    3
+}
+fn default_excessive_retries_threshold() -> usize {
+    3
+}
+
+impl Default for LoopDetectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            repeated_command_threshold: 3,
+            window_iterations: 5,
+            repeated_failure_threshold: 3,
+            excessive_retries_threshold: 3,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -264,6 +305,7 @@ impl Default for Config {
                 fail_on_flaky: false,
                 post_pr_comment: true,
             },
+            loop_detection: LoopDetectionConfig::default(),
         }
     }
 }
@@ -382,6 +424,31 @@ impl Config {
             "ci.fail_on_flaky" => {
                 if let Ok(b) = raw_val.parse::<bool>() {
                     self.ci.fail_on_flaky = b;
+                }
+            }
+            "loop_detection.enabled" => {
+                if let Ok(b) = raw_val.parse::<bool>() {
+                    self.loop_detection.enabled = b;
+                }
+            }
+            "loop_detection.repeated_command_threshold" => {
+                if let Ok(p) = raw_val.parse::<usize>() {
+                    self.loop_detection.repeated_command_threshold = p;
+                }
+            }
+            "loop_detection.window_iterations" => {
+                if let Ok(p) = raw_val.parse::<usize>() {
+                    self.loop_detection.window_iterations = p;
+                }
+            }
+            "loop_detection.repeated_failure_threshold" => {
+                if let Ok(p) = raw_val.parse::<usize>() {
+                    self.loop_detection.repeated_failure_threshold = p;
+                }
+            }
+            "loop_detection.excessive_retries_threshold" => {
+                if let Ok(p) = raw_val.parse::<usize>() {
+                    self.loop_detection.excessive_retries_threshold = p;
                 }
             }
             _ => {}

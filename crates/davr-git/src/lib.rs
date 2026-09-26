@@ -674,6 +674,100 @@ impl GitManager {
         Ok(summaries)
     }
 
+    /// Computes file diff comparing a Git reference (e.g. branch, tag, commit) against the working directory
+    pub fn diff_ref_to_workdir(&self, git_ref: &str) -> Result<Vec<FileDiffSummary>> {
+        let repo = Repository::discover(&self.project_root)
+            .map_err(|e| DavrError::Git(format!("Not a git repository: {}", e)))?;
+
+        let obj = repo
+            .revparse_single(git_ref)
+            .map_err(|e| DavrError::Git(format!("Ref '{}' not found: {}", git_ref, e)))?;
+        let tree = obj
+            .peel_to_tree()
+            .map_err(|e| DavrError::Git(format!("Failed to peel ref to tree: {}", e)))?;
+
+        let mut diff_opts = git2::DiffOptions::new();
+        diff_opts.include_untracked(true);
+        diff_opts.recurse_untracked_dirs(true);
+
+        let diff = repo
+            .diff_tree_to_workdir(Some(&tree), Some(&mut diff_opts))
+            .map_err(|e| DavrError::Git(format!("Failed to compute diff: {}", e)))?;
+
+        let mut summaries = Vec::new();
+        diff.foreach(
+            &mut |delta, _| {
+                let change_type = match delta.status() {
+                    git2::Delta::Added | git2::Delta::Untracked => "added",
+                    git2::Delta::Deleted => "deleted",
+                    git2::Delta::Modified => "modified",
+                    git2::Delta::Renamed => "renamed",
+                    _ => "modified",
+                };
+                if let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) {
+                    let path_str = path.to_string_lossy().to_string();
+                    if !path_str.starts_with(".davr") && !path_str.starts_with(".git") {
+                        summaries.push(FileDiffSummary {
+                            file_path: path_str,
+                            change_type: change_type.to_string(),
+                        });
+                    }
+                }
+                true
+            },
+            None,
+            None,
+            None,
+        )
+        .map_err(|e| DavrError::Git(format!("Failed to iterate diff: {}", e)))?;
+
+        Ok(summaries)
+    }
+
+    /// Returns files changed or untracked in the working directory compared to HEAD
+    pub fn changed_files_working_tree(&self) -> Result<Vec<FileDiffSummary>> {
+        let repo = Repository::discover(&self.project_root)
+            .map_err(|e| DavrError::Git(format!("Not a git repository: {}", e)))?;
+
+        let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+        let mut diff_opts = git2::DiffOptions::new();
+        diff_opts.include_untracked(true);
+        diff_opts.recurse_untracked_dirs(true);
+
+        let diff = repo
+            .diff_tree_to_workdir(head_tree.as_ref(), Some(&mut diff_opts))
+            .map_err(|e| DavrError::Git(format!("Failed to compute diff: {}", e)))?;
+
+        let mut summaries = Vec::new();
+        diff.foreach(
+            &mut |delta, _| {
+                let change_type = match delta.status() {
+                    git2::Delta::Added | git2::Delta::Untracked => "added",
+                    git2::Delta::Deleted => "deleted",
+                    git2::Delta::Modified => "modified",
+                    git2::Delta::Renamed => "renamed",
+                    _ => "modified",
+                };
+                if let Some(path) = delta.new_file().path().or_else(|| delta.old_file().path()) {
+                    let path_str = path.to_string_lossy().to_string();
+                    if !path_str.starts_with(".davr") && !path_str.starts_with(".git") {
+                        summaries.push(FileDiffSummary {
+                            file_path: path_str,
+                            change_type: change_type.to_string(),
+                        });
+                    }
+                }
+                true
+            },
+            None,
+            None,
+            None,
+        )
+        .map_err(|e| DavrError::Git(format!("Failed to iterate diff: {}", e)))?;
+
+        Ok(summaries)
+    }
+
     /// Fetches map of relative path -> blob oid from a snapshot tree
     pub fn get_snapshot_blobs(&self, snapshot_tree_hash: &str) -> Result<HashMap<String, String>> {
         let repo = Repository::discover(&self.project_root)
