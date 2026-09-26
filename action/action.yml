@@ -3,52 +3,190 @@ description: 'Deterministic Agent Verification Runtime for CI: Pre-flight health
 author: 'DAVR Contributors'
 
 inputs:
-  command:
-    description: 'DAVR command to run (doctor, test, impact, flaky)'
+  davr-version:
+    description: 'Version of DAVR to run (e.g. latest, v0.1.0)'
     required: false
-    default: 'test'
-  framework:
-    description: 'Override test framework (cargo_test, pytest, jest, go_test)'
+    default: 'latest'
+  config-path:
+    description: 'Path to a CI-workflow-controlled DAVR config file'
+    required: false
+    default: ''
+  base-ref:
+    description: 'Target branch for change impact analysis (e.g. main, origin/main)'
     required: false
     default: ''
   fail-on-flaky:
     description: 'Whether to fail the CI build if flaky tests are detected'
     required: false
     default: 'false'
+  post-pr-comment:
+    description: 'Whether to post/update a summary comment on the pull request'
+    required: false
+    default: 'true'
+  test-frameworks:
+    description: 'Override test frameworks to run (e.g. cargo_test, pytest, jest, go_test)'
+    required: false
+    default: ''
   working-directory:
-    description: 'Target repository directory'
+    description: 'Target repository working directory'
     required: false
     default: '.'
+  github-token:
+    description: 'GitHub token with pull-requests:write permission for sticky PR commenting'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  verification-status:
+    description: 'Overall verification result (passed, failed, or error)'
+    value: ${{ steps.verify.outputs.verification-status }}
+  impacted-file-count:
+    description: 'Number of source files impacted by the changes'
+    value: ${{ steps.verify.outputs.impacted-file-count }}
+  impacted-test-count:
+    description: 'Number of tests impacted by the changes'
+    value: ${{ steps.verify.outputs.impacted-test-count }}
+  flaky-test-count:
+    description: 'Number of flaky or timeout-unstable tests detected'
+    value: ${{ steps.verify.outputs.flaky-test-count }}
+  report-json-path:
+    description: 'Local path to the exported JSON verification report'
+    value: ${{ steps.verify.outputs.report-json-path }}
 
 runs:
   using: 'composite'
   steps:
-    - name: Set up DAVR
+    - name: Cache DAVR Binary
+      id: cache-davr-bin
+      uses: actions/cache@v4
+      with:
+        path: ~/.local/bin/davr
+        key: davr-bin-${{ runner.os }}-${{ inputs.davr-version }}
+
+    - name: Cache DAVR AST Database
+      id: cache-davr-ast
+      uses: actions/cache@v4
+      with:
+        path: ${{ inputs.working-directory }}/.davr/davr.db
+        key: davr-ast-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/package-lock.json', '**/go.sum', '**/poetry.lock') }}
+        restore-keys: |
+          davr-ast-${{ runner.os }}-
+
+    - name: Install DAVR CLI
       shell: bash
       run: |
+        mkdir -p "$HOME/.local/bin"
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
         if ! command -v davr &> /dev/null; then
-          echo "Installing DAVR binary..."
+          echo "DAVR binary not found in PATH or cache. Compiling from repository..."
           cargo install --path "${{ github.action_path }}/../crates/davr-cli" --root "$HOME/.local"
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+        else
+          echo "DAVR CLI is already available at $(command -v davr)."
         fi
 
-    - name: Run DAVR Verification
+    - name: Run DAVR Verification & Testing
+      id: verify
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
       run: |
-        echo "==> Running DAVR ${{ inputs.command }}..."
-        if [ "${{ inputs.command }}" = "doctor" ]; then
-          davr doctor
-        elif [ "${{ inputs.command }}" = "test" ]; then
-          if [ -n "${{ inputs.framework }}" ]; then
-            davr test --framework "${{ inputs.framework }}"
-          else
-            davr test
-          fi
-        elif [ "${{ inputs.command }}" = "flaky" ]; then
-          davr flaky --iterations 5
-        elif [ "${{ inputs.command }}" = "impact" ]; then
-          davr impact
+        set +e
+        echo "=== [1/5] Initializing DAVR Environment ==="
+        if [ ! -d ".davr" ]; then
+          echo "Initializing .davr in workspace..."
+          davr init || true
+        fi
+
+        if [ -n "${{ inputs.config-path }}" ] && [ -f "${{ inputs.config-path }}" ]; then
+          echo "Applying CI-controlled configuration from ${{ inputs.config-path }}..."
+          mkdir -p .davr
+          cp "${{ inputs.config-path }}" .davr/config.toml
+        fi
+
+        echo "=== [2/5] Running Pre-flight Health Check (davr doctor) ==="
+        davr doctor
+        DOCTOR_EXIT=$?
+
+        echo "=== [3/5] Performing AST Change Impact Analysis ==="
+        davr impact
+        IMPACT_EXIT=$?
+
+        echo "=== [4/5] Executing Impact-Driven Test Suite ==="
+        if [ -n "${{ inputs.test-frameworks }}" ]; then
+          davr test --framework "${{ inputs.test-frameworks }}"
         else
-          davr ${{ inputs.command }}
+          davr test
+        fi
+        TEST_EXIT=$?
+
+        echo "=== [5/5] Stress-Testing Potential Flaky Tests ==="
+        davr flaky --iterations 5
+        FLAKY_EXIT=$?
+
+        # Determine verification status
+        VERIF_STATUS="passed"
+        if [ $TEST_EXIT -ne 0 ] || [ $DOCTOR_EXIT -ne 0 ]; then
+          VERIF_STATUS="failed"
+        fi
+
+        # Export verification report
+        REPORT_FILE="davr-verification-report.json"
+        davr export --format json --out "$REPORT_FILE" || true
+
+        # Extract stats from database
+        IMPACTED_FILES=$(sqlite3 .davr/davr.db "SELECT COUNT(DISTINCT source_file_id) FROM impacted_files;" 2>/dev/null || echo "0")
+        IMPACTED_TESTS=$(sqlite3 .davr/davr.db "SELECT COUNT(DISTINCT test_case_id) FROM impacted_tests;" 2>/dev/null || echo "0")
+        FLAKY_COUNT=$(sqlite3 .davr/davr.db "SELECT COUNT(*) FROM flaky_test_runs WHERE classification IN ('FLAKY', 'TIMEOUT_UNSTABLE');" 2>/dev/null || echo "0")
+
+        echo "verification-status=$VERIF_STATUS" >> $GITHUB_OUTPUT
+        echo "impacted-file-count=${IMPACTED_FILES:-0}" >> $GITHUB_OUTPUT
+        echo "impacted-test-count=${IMPACTED_TESTS:-0}" >> $GITHUB_OUTPUT
+        echo "flaky-test-count=${FLAKY_COUNT:-0}" >> $GITHUB_OUTPUT
+        echo "report-json-path=$PWD/$REPORT_FILE" >> $GITHUB_OUTPUT
+
+        echo "Verification Complete: status=$VERIF_STATUS, impacted_files=${IMPACTED_FILES:-0}, impacted_tests=${IMPACTED_TESTS:-0}, flaky=${FLAKY_COUNT:-0}"
+
+        # Post / update sticky PR comment if in a pull request
+        if [ "${{ inputs.post-pr-comment }}" = "true" ] && [ -n "${{ github.event.pull_request.number }}" ]; then
+          PR_NUM="${{ github.event.pull_request.number }}"
+          echo "Posting verification report to Pull Request #$PR_NUM..."
+
+          STATUS_BADGE="🟢 **Passed**"
+          if [ "$VERIF_STATUS" != "passed" ]; then
+            STATUS_BADGE="🔴 **Failed**"
+          fi
+
+          COMMENT_BODY="<!-- davr-verification-report -->
+## 🛡️ DAVR Verification Report
+
+| Metric | Result |
+| :--- | :--- |
+| **Verification Status** | $STATUS_BADGE |
+| **Impacted Files** | \`${IMPACTED_FILES:-0}\` |
+| **Selected Tests** | \`${IMPACTED_TESTS:-0}\` |
+| **Flaky Tests Detected** | \`${FLAKY_COUNT:-0}\` |
+
+*Report generated deterministically by [DAVR](https://github.com/davr-dev/davr) runtime.*"
+
+          EXISTING_ID=$(gh api "repos/${{ github.repository }}/issues/$PR_NUM/comments" --jq '.[] | select(.body | contains("<!-- davr-verification-report -->")) | .id' | head -n 1)
+          if [ -n "$EXISTING_ID" ]; then
+            echo "Updating existing PR comment #$EXISTING_ID..."
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$EXISTING_ID" -f body="$COMMENT_BODY" || true
+          else
+            echo "Creating new PR comment..."
+            gh pr comment "$PR_NUM" --body "$COMMENT_BODY" || true
+          fi
+        fi
+
+        # Check fail-on-flaky condition
+        if [ "${{ inputs.fail-on-flaky }}" = "true" ] && [ "${FLAKY_COUNT:-0}" -gt 0 ]; then
+          echo "::error::Flaky tests detected and fail-on-flaky is enabled!"
+          exit 1
+        fi
+
+        # Exit with test exit code
+        if [ $TEST_EXIT -ne 0 ]; then
+          exit $TEST_EXIT
         fi
