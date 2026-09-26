@@ -6,7 +6,7 @@
 
 *A local safety supervisor and deterministic verification runtime for AI coding agents.*
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: Apache-2.0 OR MIT](https://img.shields.io/badge/License-Apache--2.0%20OR%20MIT-blue.svg)](LICENSE)
 [![Rust: 2021 Edition](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](https://www.rust-lang.org/)
 [![Built with: libgit2](https://img.shields.io/badge/Git-libgit2-green.svg)](https://libgit2.org/)
 [![Storage: SQLite WAL](https://img.shields.io/badge/Database-SQLite_WAL-blueviolet.svg)](https://www.sqlite.org/)
@@ -370,4 +370,9 @@ For security vulnerability reporting and details on our threat model and boundar
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE).
+DAVR is open source and dual-licensed under either:
+
+* **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE) or [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0))
+* **MIT License** ([LICENSE-MIT](LICENSE-MIT) or [http://opensource.org/licenses/MIT](http://opensource.org/licenses/MIT))
+
+at your option.
