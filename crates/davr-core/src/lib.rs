@@ -17,6 +17,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
+pub mod loop_detection;
+pub use loop_detection::{LoopDetector, LoopHeuristic, LoopNotice};
+
 pub use davr_flaky::{FlakyCaseReport, FlakyClassification, FlakySuiteReport};
 pub use davr_test::{TestCaseResult, TestCaseStatus, TestSuiteResult};
 
@@ -30,6 +33,8 @@ pub struct SessionSummary {
     pub files_changed: Vec<String>,
     pub commands_run: usize,
     pub duration_ms: i64,
+    #[serde(default)]
+    pub loop_notices: Vec<LoopNotice>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -439,6 +444,34 @@ impl CoreEngine {
                 "files_changed_count": touched_files.len()
             })),
         )?;
+        // 8.5. Inspect for Agent Loops
+        let mut loop_detector = LoopDetector::new(config.loop_detection.clone());
+        let loop_notices = {
+            let locked_db = db_arc.lock().unwrap();
+            loop_detector
+                .inspect_session(&locked_db, &session_id)
+                .unwrap_or_default()
+        };
+
+        for notice in &loop_notices {
+            let _ = telemetry.emit(
+                "LOOP_DETECTED",
+                Severity::Warn,
+                Some("agent_sessions"),
+                Some(session_id.as_str()),
+                Some(serde_json::json!({
+                    "heuristic": notice.heuristic.as_str(),
+                    "details": notice.details,
+                    "count": notice.count,
+                })),
+            );
+            eprintln!(
+                "⚠️  [DAVR LOOP DETECTED] {}: {}",
+                notice.heuristic.as_str(),
+                notice.details
+            );
+        }
+
         telemetry.flush()?;
 
         {
@@ -457,6 +490,7 @@ impl CoreEngine {
             files_changed: touched_files,
             commands_run: 1,
             duration_ms,
+            loop_notices,
         })
     }
 
@@ -578,7 +612,7 @@ impl CoreEngine {
 
         // 2. Open DB & Telemetry if available
         let db_path = self.project_root.join(".davr").join("davr.db");
-        let telemetry = if db_path.exists() {
+        let (db_arc_opt, telemetry) = if db_path.exists() {
             if let Ok(db) = Database::open(&db_path) {
                 let canonical_root = self
                     .project_root
@@ -591,20 +625,21 @@ impl CoreEngine {
                 ) {
                     let db_arc = Arc::new(Mutex::new(db));
                     let session_obj = session_id_override.map(SessionId::from_string);
-                    Some(TelemetryEmitter::new(
-                        db_arc,
+                    let tel = TelemetryEmitter::new(
+                        Arc::clone(&db_arc),
                         project_id,
                         session_obj,
                         config.telemetry.enabled,
-                    ))
+                    );
+                    (Some(db_arc), Some(tel))
                 } else {
-                    None
+                    (None, None)
                 }
             } else {
-                None
+                (None, None)
             }
         } else {
-            None
+            (None, None)
         };
 
         if let Some(ref tel) = telemetry {
@@ -628,6 +663,43 @@ impl CoreEngine {
             Ok(code) => *code,
             Err(_) => 1,
         };
+
+        // 4. Record command into database & evaluate loop detection
+        if let (Some(ref db_arc), Some(sid)) = (&db_arc_opt, session_id_override) {
+            let session_id = SessionId::from_string(sid);
+            let now = Utc::now().timestamp_millis();
+            let locked_db = db_arc.lock().unwrap();
+            let conn = locked_db.inner();
+            let _ = conn.execute(
+                "INSERT INTO commands (session_id, raw_command, policy_decision, exit_code, started_at, finished_at)
+                 VALUES (?1, ?2, 'allowed', ?3, ?4, ?5)",
+                rusqlite::params![session_id.as_str(), &raw_command_line, exit_code, start, now],
+            );
+
+            let mut loop_detector = LoopDetector::new(config.loop_detection.clone());
+            if let Ok(notices) = loop_detector.inspect_session(&locked_db, &session_id) {
+                for notice in notices {
+                    if let Some(ref tel) = telemetry {
+                        let _ = tel.emit(
+                            "LOOP_DETECTED",
+                            Severity::Warn,
+                            Some("agent_sessions"),
+                            Some(session_id.as_str()),
+                            Some(serde_json::json!({
+                                "heuristic": notice.heuristic.as_str(),
+                                "details": notice.details,
+                                "count": notice.count,
+                            })),
+                        );
+                    }
+                    eprintln!(
+                        "⚠️  [DAVR LOOP DETECTED] {}: {}",
+                        notice.heuristic.as_str(),
+                        notice.details
+                    );
+                }
+            }
+        }
 
         if let Some(ref tel) = telemetry {
             let _ = tel.emit(
@@ -1038,13 +1110,42 @@ impl CoreEngine {
     }
 
     /// Runs tests across detected frameworks and records results
+    /// Runs tests across detected frameworks and records results
     pub async fn run_tests(
         &self,
         framework_override: Option<&str>,
         filter: Option<&str>,
+        selected_only: bool,
+        full_suite: bool,
     ) -> Result<Vec<davr_test::TestSuiteResult>> {
         let config = Config::load_from_dir(&self.project_root)?;
         let runner = davr_test::TestRunner::new();
+
+        // Determine effective filter based on --selected / --full
+        let mut effective_filter = filter.map(|s| s.to_string());
+        if selected_only {
+            let impact = self.analyze_impact(None, None, 3)?;
+            if !impact.impacted_tests.is_empty() {
+                let test_names: Vec<String> = impact
+                    .impacted_tests
+                    .into_iter()
+                    .filter_map(|t| t.test_name)
+                    .collect();
+                let joined = test_names.join(" ");
+                if let Some(existing) = effective_filter {
+                    effective_filter = Some(format!("{} {}", existing, joined));
+                } else {
+                    effective_filter = Some(joined);
+                }
+            } else if !full_suite && !config.test.fallback_to_full_suite {
+                eprintln!("✔ No tests impacted by recent changes. Skipping test execution (use --full to run all).");
+                return Ok(Vec::new());
+            } else {
+                eprintln!(
+                    "ℹ No impacted tests detected; falling back to full suite per configuration."
+                );
+            }
+        }
 
         let timeout = if config.agent.timeout_seconds > 0 {
             config.agent.timeout_seconds
@@ -1093,13 +1194,20 @@ impl CoreEngine {
                 None,
                 Some(serde_json::json!({
                     "framework": framework_override,
-                    "filter": filter,
+                    "filter": effective_filter.as_deref(),
+                    "selected_only": selected_only,
+                    "full_suite": full_suite,
                 })),
             );
         }
 
         let results = runner
-            .run(&self.project_root, framework_override, filter, timeout)
+            .run(
+                &self.project_root,
+                framework_override,
+                effective_filter.as_deref(),
+                timeout,
+            )
             .await?;
 
         let duration_ms = Utc::now().timestamp_millis() - start_ms;
@@ -1139,7 +1247,7 @@ impl CoreEngine {
     }
 
     /// Indexes project source code symbols and dependency edges
-    pub fn analyze_project(&self) -> Result<AnalysisSummary> {
+    pub fn analyze_project(&self, _base_ref: Option<&str>) -> Result<AnalysisSummary> {
         let config = Config::load_from_dir(&self.project_root)?;
         let db_path = self.project_root.join(".davr").join("davr.db");
         if !db_path.exists() {
@@ -1187,9 +1295,10 @@ impl CoreEngine {
     pub fn analyze_impact(
         &self,
         snapshot_tree_hash: Option<&str>,
+        base_ref: Option<&str>,
         max_depth: usize,
     ) -> Result<davr_impact::ImpactReport> {
-        let _ = self.analyze_project()?; // Ensure AST index is fresh
+        let _ = self.analyze_project(base_ref)?; // Ensure AST index is fresh
 
         let config = Config::load_from_dir(&self.project_root)?;
         let db_path = self.project_root.join(".davr").join("davr.db");
@@ -1206,20 +1315,20 @@ impl CoreEngine {
 
         // Determine changed files
         let git_mgr = GitManager::new(&self.project_root);
-        let target_tree = if let Some(hash) = snapshot_tree_hash {
-            Some(hash.to_string())
-        } else {
-            let conn = db.inner();
-            conn.query_row(
-                "SELECT tree_hash FROM git_snapshots ORDER BY created_at DESC LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
-            .ok()
-        };
-
-        let changed_files = if let Some(tree_hash) = target_tree {
-            if let Ok(diffs) = git_mgr.diff_snapshot(&tree_hash) {
+        let changed_files = if let Some(base) = base_ref {
+            if let Ok(diffs) = git_mgr.diff_ref_to_workdir(base) {
+                diffs
+                    .into_iter()
+                    .filter(|d| {
+                        !d.file_path.starts_with(".davr") && !d.file_path.starts_with(".git")
+                    })
+                    .map(|d| d.file_path)
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        } else if let Some(tree_hash) = snapshot_tree_hash {
+            if let Ok(diffs) = git_mgr.diff_snapshot(tree_hash) {
                 diffs
                     .into_iter()
                     .filter(|d| {
@@ -1231,7 +1340,38 @@ impl CoreEngine {
                 Vec::new()
             }
         } else {
-            Vec::new()
+            let conn = db.inner();
+            let latest_tree: Option<String> = conn
+                .query_row(
+                    "SELECT tree_hash FROM git_snapshots ORDER BY created_at DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+
+            if let Some(ref tree_hash) = latest_tree {
+                if let Ok(diffs) = git_mgr.diff_snapshot(tree_hash) {
+                    diffs
+                        .into_iter()
+                        .filter(|d| {
+                            !d.file_path.starts_with(".davr") && !d.file_path.starts_with(".git")
+                        })
+                        .map(|d| d.file_path)
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            } else if let Ok(diffs) = git_mgr.changed_files_working_tree() {
+                diffs
+                    .into_iter()
+                    .filter(|d| {
+                        !d.file_path.starts_with(".davr") && !d.file_path.starts_with(".git")
+                    })
+                    .map(|d| d.file_path)
+                    .collect()
+            } else {
+                Vec::new()
+            }
         };
 
         let analyzer = davr_impact::ImpactAnalyzer::new(max_depth);
@@ -1244,6 +1384,7 @@ impl CoreEngine {
         framework: Option<&str>,
         filter: Option<&str>,
         iterations: Option<usize>,
+        changed_only: bool,
     ) -> Result<davr_flaky::FlakySuiteReport> {
         let config = Config::load_from_dir(&self.project_root)?;
         let runner = davr_flaky::FlakyTestRunner::new(config.flaky.iterations as usize);
@@ -1254,8 +1395,50 @@ impl CoreEngine {
             30
         };
 
+        let mut effective_filter = filter.map(|s| s.to_string());
+        if changed_only {
+            let git_mgr = GitManager::new(&self.project_root);
+            let changed_test_files = if let Ok(diffs) = git_mgr.changed_files_working_tree() {
+                diffs
+                    .into_iter()
+                    .filter(|d| {
+                        let p = d.file_path.to_lowercase();
+                        p.contains("test")
+                            || p.ends_with(".spec.ts")
+                            || p.ends_with(".spec.js")
+                            || p.ends_with(".spec.jsx")
+                            || p.ends_with(".spec.tsx")
+                    })
+                    .map(|d| d.file_path)
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+
+            if changed_test_files.is_empty() {
+                eprintln!("ℹ No changed test files found in working directory.");
+                return Ok(davr_flaky::FlakySuiteReport {
+                    total_tests: 0,
+                    stable_pass: 0,
+                    stable_fail: 0,
+                    flaky_detected: 0,
+                    timeout_unstable: 0,
+                    reports: Vec::new(),
+                });
+            }
+
+            let joined = changed_test_files.join(" ");
+            effective_filter = Some(joined);
+        }
+
         let report = runner
-            .run_analysis(&self.project_root, framework, filter, iterations, timeout)
+            .run_analysis(
+                &self.project_root,
+                framework,
+                effective_filter.as_deref(),
+                iterations,
+                timeout,
+            )
             .await?;
 
         let db_path = self.project_root.join(".davr").join("davr.db");

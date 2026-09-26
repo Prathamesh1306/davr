@@ -228,14 +228,18 @@ impl McpServer {
             "davr_test" => {
                 let framework = args.get("framework").and_then(|v| v.as_str());
                 let filter = args.get("filter").and_then(|v| v.as_str());
-                let results = self.engine.run_tests(framework, filter).await?;
+                let results = self
+                    .engine
+                    .run_tests(framework, filter, false, false)
+                    .await?;
                 Ok(serde_json::to_value(results).unwrap_or_default())
             }
 
             "davr_analyze_impact" => {
                 let snapshot = args.get("snapshot").and_then(|v| v.as_str());
+                let base = args.get("base").and_then(|v| v.as_str());
                 let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
-                let report = self.engine.analyze_impact(snapshot, depth)?;
+                let report = self.engine.analyze_impact(snapshot, base, depth)?;
                 Ok(serde_json::to_value(report).unwrap_or_default())
             }
 

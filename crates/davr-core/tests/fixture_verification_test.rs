@@ -74,7 +74,9 @@ fn test_ast_indexing_on_fixture_codebases() {
     let engine = CoreEngine::new(root);
     let _ = engine.init(false, Some(vec!["rust".into()])).unwrap();
 
-    let summary = engine.analyze_project().expect("analyze_project failed");
+    let summary = engine
+        .analyze_project(None)
+        .expect("analyze_project failed");
     assert!(summary.files_indexed >= 1);
     assert!(summary.symbols_extracted >= 2); // 'add' and 'multiply'
 }
