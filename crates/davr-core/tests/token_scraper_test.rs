@@ -49,8 +49,7 @@ async fn test_live_token_and_context_scraping_e2e() {
         "cmd.exe",
         vec![
             "/C".into(),
-            "echo Tokens: 1,420 input, 380 output. Cost: $0.024 & echo Context fill ratio: 0.85"
-                .into(),
+            "echo Tokens: 1,420 input, 380 output. Cost: $0.024. Context fill ratio: 0.85".into(),
         ],
     );
     #[cfg(not(windows))]
@@ -58,7 +57,7 @@ async fn test_live_token_and_context_scraping_e2e() {
         "sh",
         vec![
             "-c".into(),
-            "echo 'Tokens: 1,420 input, 380 output. Cost: $0.024' && echo 'Context fill ratio: 0.85'".into(),
+            "echo 'Tokens: 1,420 input, 380 output. Cost: $0.024. Context fill ratio: 0.85'".into(),
         ],
     );
 

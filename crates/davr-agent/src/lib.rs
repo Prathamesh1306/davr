@@ -6,6 +6,7 @@ use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::env;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -134,7 +135,11 @@ impl ProcessSupervisor {
         let mut cmd = Command::new(command_line);
         cmd.args(args);
         cmd.current_dir(&self.project_root);
-        cmd.stdin(Stdio::inherit());
+        if std::io::stdin().is_terminal() {
+            cmd.stdin(Stdio::inherit());
+        } else {
+            cmd.stdin(Stdio::null());
+        }
 
         if self.config.scrape_tokens {
             cmd.stdout(Stdio::piped());
@@ -167,27 +172,31 @@ impl ProcessSupervisor {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
 
-        if let Some(stdout) = child.stdout.take() {
+        let stdout_handle = if let Some(stdout) = child.stdout.take() {
             let tx_out = tx.clone();
-            tokio::spawn(async move {
+            Some(tokio::spawn(async move {
                 let mut reader = tokio::io::BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = reader.next_line().await {
                     println!("{}", line);
                     let _ = tx_out.send((line, false));
                 }
-            });
-        }
+            }))
+        } else {
+            None
+        };
 
-        if let Some(stderr) = child.stderr.take() {
+        let stderr_handle = if let Some(stderr) = child.stderr.take() {
             let tx_err = tx.clone();
-            tokio::spawn(async move {
+            Some(tokio::spawn(async move {
                 let mut reader = tokio::io::BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = reader.next_line().await {
                     eprintln!("{}", line);
                     let _ = tx_err.send((line, true));
                 }
-            });
-        }
+            }))
+        } else {
+            None
+        };
         drop(tx);
 
         let timeout_secs = self.config.timeout_seconds;
@@ -209,6 +218,12 @@ impl ProcessSupervisor {
                     line_handler(&line, is_stderr);
                 }
                 res = child.wait() => {
+                    if let Some(h) = stdout_handle {
+                        let _ = h.await;
+                    }
+                    if let Some(h) = stderr_handle {
+                        let _ = h.await;
+                    }
                     while let Ok((line, is_stderr)) = rx.try_recv() {
                         line_handler(&line, is_stderr);
                     }
