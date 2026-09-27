@@ -652,6 +652,35 @@ async fn execute_command(
                     for f in &detail.touched_files {
                         println!("    - {}", f);
                     }
+                    if let Some(tokens) = &detail.token_usage {
+                        println!("\n  {}", "Token Consumption:".bold());
+                        if let Some(inp) = tokens.input_tokens {
+                            println!("    Input tokens:    {}", inp);
+                        }
+                        if let Some(out) = tokens.output_tokens {
+                            println!("    Output tokens:   {}", out);
+                        }
+                        if let Some(cached) = tokens.cached_tokens {
+                            println!("    Cached tokens:   {}", cached);
+                        }
+                        if let Some(tot) = tokens.total_tokens {
+                            println!("    Total tokens:    {}", tot);
+                        }
+                        if let Some(cost) = tokens.cost_usd {
+                            println!("    Estimated cost:  ${:.4}", cost);
+                        }
+                    }
+                    if let Some(ctx) = &detail.context_metrics {
+                        if let Some(ratio) = ctx.context_fill_ratio {
+                            let pct = ratio * 100.0;
+                            let warn_str = if ctx.warning_triggered {
+                                " (Warning Triggered)".yellow().to_string()
+                            } else {
+                                String::new()
+                            };
+                            println!("  Context fill:      {:.1}%{}", pct, warn_str);
+                        }
+                    }
                     println!();
                 }
                 Ok(0)

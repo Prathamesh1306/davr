@@ -9,9 +9,13 @@ use std::env;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
+use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
+
+pub mod scraper;
+pub use scraper::TokenScraper;
 
 // =====================================================================
 // Agent Adapters (Tier 1 universal + Tier 2 placeholders)
@@ -109,6 +113,21 @@ impl ProcessSupervisor {
 
     /// Spawns the agent process inside a process group and supervises it to completion
     pub async fn run_supervised(&self, command_line: &str, args: &[String]) -> Result<i32> {
+        self.run_supervised_with_stream(command_line, args, |_line, _is_stderr| {})
+            .await
+    }
+
+    /// Spawns the agent process inside a process group and supervises it to completion,
+    /// streaming stdout/stderr lines concurrently to console and invoking line callback.
+    pub async fn run_supervised_with_stream<F>(
+        &self,
+        command_line: &str,
+        args: &[String],
+        mut line_handler: F,
+    ) -> Result<i32>
+    where
+        F: FnMut(&str, bool) + Send + 'static,
+    {
         let adapter = select_adapter(&self.config.default_agent);
         let env_map = adapter.build_env(&self.config);
 
@@ -116,8 +135,14 @@ impl ProcessSupervisor {
         cmd.args(args);
         cmd.current_dir(&self.project_root);
         cmd.stdin(Stdio::inherit());
-        cmd.stdout(Stdio::inherit());
-        cmd.stderr(Stdio::inherit());
+
+        if self.config.scrape_tokens {
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+        } else {
+            cmd.stdout(Stdio::inherit());
+            cmd.stderr(Stdio::inherit());
+        }
 
         // Set sanitized environment
         if self.config.sanitize_env {
@@ -140,6 +165,31 @@ impl ProcessSupervisor {
 
         let child_id = child.id().unwrap_or(0);
 
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
+
+        if let Some(stdout) = child.stdout.take() {
+            let tx_out = tx.clone();
+            tokio::spawn(async move {
+                let mut reader = tokio::io::BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    println!("{}", line);
+                    let _ = tx_out.send((line, false));
+                }
+            });
+        }
+
+        if let Some(stderr) = child.stderr.take() {
+            let tx_err = tx.clone();
+            tokio::spawn(async move {
+                let mut reader = tokio::io::BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    eprintln!("{}", line);
+                    let _ = tx_err.send((line, true));
+                }
+            });
+        }
+        drop(tx);
+
         let timeout_secs = self.config.timeout_seconds;
         let timeout_fut = async move {
             if timeout_secs > 0 {
@@ -149,31 +199,42 @@ impl ProcessSupervisor {
                 std::future::pending::<bool>().await
             }
         };
+        tokio::pin!(timeout_fut);
+        let ctrl_c_fut = tokio::signal::ctrl_c();
+        tokio::pin!(ctrl_c_fut);
 
-        tokio::select! {
-            res = child.wait() => {
-                match res {
-                    Ok(status) => {
-                        let code = status.code().unwrap_or(1);
-                        debug!(exit_code = code, "Agent process completed");
-                        Ok(code)
-                    }
-                    Err(e) => Err(DavrError::Agent(format!("Error waiting for agent: {}", e))),
+        loop {
+            tokio::select! {
+                Some((line, is_stderr)) = rx.recv() => {
+                    line_handler(&line, is_stderr);
                 }
-            }
-            _ = timeout_fut => {
-                warn!(pid = child_id, "Agent session exceeded timeout; killing process group");
-                terminate_process_tree(child_id, false);
-                sleep(Duration::from_millis(500)).await;
-                terminate_process_tree(child_id, true);
-                Err(DavrError::Agent("Agent session timed out".into()))
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!(pid = child_id, "Received Ctrl+C; forwarding termination signal to agent process tree");
-                terminate_process_tree(child_id, false);
-                sleep(Duration::from_millis(500)).await;
-                terminate_process_tree(child_id, true);
-                Err(DavrError::Agent("Session aborted by user via Ctrl+C".into()))
+                res = child.wait() => {
+                    while let Ok((line, is_stderr)) = rx.try_recv() {
+                        line_handler(&line, is_stderr);
+                    }
+                    match res {
+                        Ok(status) => {
+                            let code = status.code().unwrap_or(1);
+                            debug!(exit_code = code, "Agent process completed");
+                            return Ok(code);
+                        }
+                        Err(e) => return Err(DavrError::Agent(format!("Error waiting for agent: {}", e))),
+                    }
+                }
+                _ = &mut timeout_fut => {
+                    warn!(pid = child_id, "Agent session exceeded timeout; killing process group");
+                    terminate_process_tree(child_id, false);
+                    sleep(Duration::from_millis(500)).await;
+                    terminate_process_tree(child_id, true);
+                    return Err(DavrError::Agent("Agent session timed out".into()));
+                }
+                _ = &mut ctrl_c_fut => {
+                    info!(pid = child_id, "Received Ctrl+C; forwarding termination signal to agent process tree");
+                    terminate_process_tree(child_id, false);
+                    sleep(Duration::from_millis(500)).await;
+                    terminate_process_tree(child_id, true);
+                    return Err(DavrError::Agent("Session aborted by user via Ctrl+C".into()));
+                }
             }
         }
     }
@@ -220,6 +281,7 @@ mod tests {
             timeout_seconds: 5,
             sanitize_env: false,
             env_allowlist: vec![],
+            scrape_tokens: true,
         };
 
         let supervisor = ProcessSupervisor::new(temp.path(), config);

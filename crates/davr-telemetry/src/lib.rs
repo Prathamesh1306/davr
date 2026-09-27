@@ -23,6 +23,7 @@ struct QueuedEvent {
     payload: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct TelemetryEmitter {
     db: Arc<Mutex<Database>>,
     project_id: ProjectId,

@@ -20,8 +20,10 @@ use tracing::info;
 pub mod loop_detection;
 pub use loop_detection::{LoopDetector, LoopHeuristic, LoopNotice};
 
+pub use davr_agent::TokenScraper;
 pub use davr_flaky::{FlakyCaseReport, FlakyClassification, FlakySuiteReport};
 pub use davr_test::{TestCaseResult, TestCaseStatus, TestSuiteResult};
+pub use davr_types::{ContextMetricsRecord, TokenUsageRecord};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSummary {
@@ -35,6 +37,10 @@ pub struct SessionSummary {
     pub duration_ms: i64,
     #[serde(default)]
     pub loop_notices: Vec<LoopNotice>,
+    #[serde(default)]
+    pub token_usage: Option<TokenUsageRecord>,
+    #[serde(default)]
+    pub context_metrics: Option<ContextMetricsRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +65,10 @@ pub struct SessionDetail {
     pub exit_code: Option<i32>,
     pub duration_ms: Option<i64>,
     pub touched_files: Vec<String>,
+    #[serde(default)]
+    pub token_usage: Option<TokenUsageRecord>,
+    #[serde(default)]
+    pub context_metrics: Option<ContextMetricsRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -344,9 +354,49 @@ impl CoreEngine {
             })),
         )?;
 
-        // 6. Spawn and supervise agent process
+        // 6. Spawn and supervise agent process with live token and context scraping
         let supervisor = ProcessSupervisor::new(&self.project_root, config.agent.clone());
-        let agent_result = supervisor.run_supervised(command, args).await;
+        let db_for_stream = Arc::clone(&db_arc);
+        let session_id_for_stream = session_id.clone();
+        let telemetry_for_stream = telemetry.clone();
+
+        let agent_result = supervisor
+            .run_supervised_with_stream(command, args, move |line, _is_stderr| {
+                let (token_opt, ctx_opt) = TokenScraper::parse_line(line);
+                if let Some(token) = token_opt {
+                    if let Ok(locked_db) = db_for_stream.lock() {
+                        let _ = locked_db.record_token_usage(&session_id_for_stream, &token);
+                    }
+                    let _ = telemetry_for_stream.emit(
+                        "TOKEN_USAGE",
+                        Severity::Info,
+                        Some("token_usage"),
+                        None,
+                        Some(serde_json::to_value(&token).unwrap_or_default()),
+                    );
+                }
+                if let Some(ctx) = ctx_opt {
+                    if let Ok(locked_db) = db_for_stream.lock() {
+                        let _ = locked_db.record_context_metrics(&session_id_for_stream, &ctx);
+                    }
+                    if ctx.warning_triggered {
+                        let _ = telemetry_for_stream.emit(
+                            "CONTEXT_WARNING",
+                            Severity::Warn,
+                            Some("context_metrics"),
+                            None,
+                            Some(serde_json::to_value(&ctx).unwrap_or_default()),
+                        );
+                        if let Some(ratio) = ctx.context_fill_ratio {
+                            eprintln!(
+                                "⚠ DAVR Warning: Context window nearing capacity ({:.0}% full)",
+                                ratio * 100.0
+                            );
+                        }
+                    }
+                }
+            })
+            .await;
 
         // 7. Drain and record filesystem events
         let mut touched_set = HashSet::new();
@@ -481,6 +531,49 @@ impl CoreEngine {
 
         let duration_ms = Utc::now().timestamp_millis() - start_time;
 
+        let (token_usage, context_metrics) = {
+            let locked_db = db_arc.lock().unwrap();
+            let conn = locked_db.inner();
+            let tokens = conn
+                .query_row(
+                    "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cached_tokens), SUM(total_tokens), SUM(cost_usd)
+                     FROM token_usage WHERE session_id = ?1",
+                    rusqlite::params![session_id.as_str()],
+                    |r| {
+                        Ok(TokenUsageRecord {
+                            input_tokens: r.get(0)?,
+                            output_tokens: r.get(1)?,
+                            cached_tokens: r.get(2)?,
+                            total_tokens: r.get(3)?,
+                            cost_usd: r.get(4)?,
+                        })
+                    },
+                )
+                .ok()
+                .filter(|u| {
+                    u.input_tokens.is_some()
+                        || u.output_tokens.is_some()
+                        || u.total_tokens.is_some()
+                        || u.cost_usd.is_some()
+                });
+
+            let ctx = conn
+                .query_row(
+                    "SELECT context_fill_ratio, warning_triggered FROM context_metrics WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
+                    rusqlite::params![session_id.as_str()],
+                    |r| {
+                        let fill: Option<f64> = r.get(0)?;
+                        let warn_int: i32 = r.get(1)?;
+                        Ok(ContextMetricsRecord {
+                            context_fill_ratio: fill,
+                            warning_triggered: warn_int == 1,
+                        })
+                    },
+                )
+                .ok();
+            (tokens, ctx)
+        };
+
         Ok(SessionSummary {
             session_id: session_id.to_string(),
             agent_name: agent_name.to_string(),
@@ -491,6 +584,8 @@ impl CoreEngine {
             commands_run: 1,
             duration_ms,
             loop_notices,
+            token_usage,
+            context_metrics,
         })
     }
 
@@ -573,6 +668,47 @@ impl CoreEngine {
             touched_files.push(path);
         }
 
+        let (token_usage, context_metrics) = {
+            let tokens = conn
+                .query_row(
+                    "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cached_tokens), SUM(total_tokens), SUM(cost_usd)
+                     FROM token_usage WHERE session_id = ?1",
+                    rusqlite::params![&id],
+                    |r| {
+                        Ok(TokenUsageRecord {
+                            input_tokens: r.get(0)?,
+                            output_tokens: r.get(1)?,
+                            cached_tokens: r.get(2)?,
+                            total_tokens: r.get(3)?,
+                            cost_usd: r.get(4)?,
+                        })
+                    },
+                )
+                .ok()
+                .filter(|u| {
+                    u.input_tokens.is_some()
+                        || u.output_tokens.is_some()
+                        || u.total_tokens.is_some()
+                        || u.cost_usd.is_some()
+                });
+
+            let ctx = conn
+                .query_row(
+                    "SELECT context_fill_ratio, warning_triggered FROM context_metrics WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
+                    rusqlite::params![&id],
+                    |r| {
+                        let fill: Option<f64> = r.get(0)?;
+                        let warn_int: i32 = r.get(1)?;
+                        Ok(ContextMetricsRecord {
+                            context_fill_ratio: fill,
+                            warning_triggered: warn_int == 1,
+                        })
+                    },
+                )
+                .ok();
+            (tokens, ctx)
+        };
+
         Ok(SessionDetail {
             id,
             agent_name,
@@ -583,6 +719,8 @@ impl CoreEngine {
             exit_code,
             duration_ms,
             touched_files,
+            token_usage,
+            context_metrics,
         })
     }
 

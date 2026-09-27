@@ -1,7 +1,7 @@
 use chrono::Utc;
 use davr_types::{
-    CheckCategory, CheckStatus, DavrError, EnvironmentCheckId, FileState, ProjectId, Result,
-    SessionId, SessionStatus, Severity,
+    CheckCategory, CheckStatus, ContextMetricsRecord, DavrError, EnvironmentCheckId, FileState,
+    ProjectId, Result, SessionId, SessionStatus, Severity, TokenUsageRecord,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
@@ -267,6 +267,89 @@ impl Database {
             )
             .map_err(|e| DavrError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// Records token consumption metrics for an agent session.
+    pub fn record_token_usage(
+        &self,
+        session_id: &SessionId,
+        usage: &TokenUsageRecord,
+    ) -> Result<i64> {
+        let now = Utc::now().timestamp_millis();
+        let available = if usage.input_tokens.is_some()
+            || usage.output_tokens.is_some()
+            || usage.total_tokens.is_some()
+        {
+            1
+        } else {
+            0
+        };
+        self.conn
+            .execute(
+                "INSERT INTO token_usage (session_id, available, input_tokens, output_tokens, cached_tokens, total_tokens, cost_usd, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    session_id.as_str(),
+                    available,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.cached_tokens,
+                    usage.total_tokens,
+                    usage.cost_usd,
+                    now
+                ],
+            )
+            .map_err(|e| DavrError::Database(e.to_string()))?;
+
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Records context window metrics and warnings for an agent session.
+    pub fn record_context_metrics(
+        &self,
+        session_id: &SessionId,
+        metrics: &ContextMetricsRecord,
+    ) -> Result<i64> {
+        let now = Utc::now().timestamp_millis();
+        self.conn
+            .execute(
+                "INSERT INTO context_metrics (session_id, context_fill_ratio, warning_triggered, recorded_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    session_id.as_str(),
+                    metrics.context_fill_ratio,
+                    if metrics.warning_triggered { 1 } else { 0 },
+                    now
+                ],
+            )
+            .map_err(|e| DavrError::Database(e.to_string()))?;
+
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Returns all token usage records for a session.
+    pub fn get_token_usage(&self, session_id: &SessionId) -> Result<Vec<TokenUsageRecord>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT input_tokens, output_tokens, cached_tokens, total_tokens, cost_usd
+                 FROM token_usage WHERE session_id = ?1 ORDER BY id ASC",
+            )
+            .map_err(|e| DavrError::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![session_id.as_str()], |row| {
+                Ok(TokenUsageRecord {
+                    input_tokens: row.get(0)?,
+                    output_tokens: row.get(1)?,
+                    cached_tokens: row.get(2)?,
+                    total_tokens: row.get(3)?,
+                    cost_usd: row.get(4)?,
+                })
+            })
+            .map_err(|e| DavrError::Database(e.to_string()))?;
+
+        Ok(rows.flatten().collect())
     }
 
     /// Records post-session state (hash or missing) for touched files

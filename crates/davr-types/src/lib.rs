@@ -323,3 +323,18 @@ impl DavrError {
 }
 
 pub type Result<T> = std::result::Result<T, DavrError>;
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TokenUsageRecord {
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cached_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ContextMetricsRecord {
+    pub context_fill_ratio: Option<f64>,
+    pub warning_triggered: bool,
+}
