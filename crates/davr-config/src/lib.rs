@@ -60,6 +60,8 @@ pub struct AgentConfig {
     pub sanitize_env: bool,
     #[serde(default = "default_env_allowlist")]
     pub env_allowlist: Vec<String>,
+    #[serde(default = "default_true")]
+    pub scrape_tokens: bool,
 }
 
 fn default_true() -> bool {
@@ -270,6 +272,7 @@ impl Default for Config {
                 timeout_seconds: 0,
                 sanitize_env: true,
                 env_allowlist: default_env_allowlist(),
+                scrape_tokens: true,
             },
             security: SecurityConfig {
                 blocked_commands: default_blocked_commands(),
@@ -353,6 +356,11 @@ impl Config {
             "agent.sanitize_env" => {
                 if let Ok(b) = raw_val.parse::<bool>() {
                     self.agent.sanitize_env = b;
+                }
+            }
+            "agent.scrape_tokens" => {
+                if let Ok(b) = raw_val.parse::<bool>() {
+                    self.agent.scrape_tokens = b;
                 }
             }
             "telemetry.enabled" => {
