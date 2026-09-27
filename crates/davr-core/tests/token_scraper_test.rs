@@ -46,11 +46,10 @@ async fn test_live_token_and_context_scraping_e2e() {
     // 2. Run agent session simulating Claude/Aider live stdout with tokens and context warning
     #[cfg(windows)]
     let (cmd, args) = (
-        "cmd.exe",
+        "powershell",
         vec![
-            "/C".into(),
-            "echo Tokens: 1,420 input, 380 output. Cost: $0.024 & echo Context window: 85% full"
-                .into(),
+            "-Command".into(),
+            "Write-Output 'Tokens: 1,420 input, 380 output. Cost: $0.024'; Write-Output 'Context window: 85% full'".into(),
         ],
     );
     #[cfg(not(windows))]
